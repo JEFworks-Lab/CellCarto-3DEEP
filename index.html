@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3DEEP Hair Follicle Data Explorer</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="container">
+        <div id="left-panel">
+            <div class="panel-content">
+                <div id="description-section">
+                    <h1>3DEEP Hair Follicle Data Explorer</h1>
+                    <div id="description">
+                        <p>3DEEP is a tissue clearing and spatial transcriptomic strategy for characterizing tissue blocks up to 400 µm in thickness. This data captures 371 hair follicles at different stages of organogenesis in 1 mm³ of skin of a 12-hour-old mouse with 6 million transcripts from 81 genes.</p>
+                    </div>
+                </div>
+
+                <div id="legend-section">
+                    <h2>Legend</h2>
+                    <div id="legend" class="legend"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="center-panel">
+            <canvas id="scene"></canvas>
+            <div id="loading">
+                <div class="loading-spinner"></div>
+                <div class="loading-text">Loading data... This may take a moment.</div>
+            </div>
+        </div>
+
+        <div id="right-panel">
+            <div class="panel-content">
+                <h2>Controls</h2>
+                
+                <div class="control-group">
+                    <label for="colorBy">Color By:</label>
+                    <select id="colorBy">
+                        <option value="Gene">Gene</option>
+                        <option value="CellType">CellType</option>
+                        <option value="Structure">Structure</option>
+                        <option value="cell">Cell</option>
+                        <option value="Time">Time</option>
+                        <option value="HF">HF</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <label>Filters:</label>
+                    <button id="addFilter">+ Add Filter</button>
+                    <div id="filtersContainer"></div>
+                </div>
+
+                <div class="control-group">
+                    <label>
+                        <input type="checkbox" id="showAllPoints">
+                        Show All Points (may be slow)
+                    </label>
+                </div>
+
+                <div class="control-group">
+                    <label for="pointSize">Point Size:</label>
+                    <input type="range" id="pointSize" min="0.5" max="5" step="0.1" value="1">
+                    <span id="pointSizeValue">1.0</span>
+                </div>
+
+                <div class="control-group">
+                    <label for="sampleRate">Sample Rate (for performance):</label>
+                    <input type="range" id="sampleRate" min="1" max="100" step="1" value="10">
+                    <span id="sampleRateValue">10%</span>
+                </div>
+
+                <div class="info">
+                    <p id="pointCount">Loading data...</p>
+                    <p id="visibleCount">Visible points: 0</p>
+                </div>
+
+                <div class="control-group">
+                    <button id="resetCamera">Reset Camera</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.128.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.128.0/examples/jsm/"
+        }
+    }
+    </script>
+    <script type="module" src="app.js"></script>
+</body>
+</html>
