@@ -14,6 +14,11 @@ body {
     background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
 }
 
+.logo {
+    padding: 12px;
+    margin-bottom: 12px;
+}
+
 #container {
     display: grid;
     grid-template-columns: 300px 1fr 320px;
@@ -60,6 +65,10 @@ body {
     color: rgba(255, 255, 255, 0.8);
 }
 
+#description a {
+    color: rgba(150, 150, 150, 0.8);
+}
+
 #description p {
     margin: 0;
 }
@@ -71,6 +80,29 @@ body {
     font-weight: 500;
     text-transform: uppercase;
     letter-spacing: 1px;
+}
+
+#randomizeColors {
+    width: 100%;
+    padding: 10px;
+    margin-bottom: 12px;
+    background: rgba(255, 255, 255, 0.1);
+    color: rgba(255, 255, 255, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.85em;
+    transition: all 0.2s ease;
+    font-weight: 500;
+}
+
+#randomizeColors:hover {
+    background: rgba(255, 255, 255, 0.15);
+    border-color: rgba(255, 255, 255, 0.25);
+}
+
+#randomizeColors:active {
+    background: rgba(255, 255, 255, 0.2);
 }
 
 /* Center Panel - Visualization */
@@ -150,6 +182,7 @@ body {
 
 .control-group {
     margin-bottom: 20px;
+    color: rgba(150, 150, 150, 0.8);
 }
 
 .control-group label {
