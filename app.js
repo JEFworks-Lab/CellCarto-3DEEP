@@ -16,8 +16,8 @@ const files = [
 ];
 
 // Configuration for downsampling
-const TARGET_POINTS_PER_FILE = 100000; // Target number of points to keep per file
-const MAX_POINTS = 1000000; // Reduce for performance
+const TARGET_POINTS_PER_FILE = 200000; // Target number of points to keep per file
+const MAX_POINTS = 2000000; // Reduce for performance
     
 // Column configuration - users can manually change these lists
 let idx_names = ['transformedX', 'transformedZ', 'transformedY']; // Default to transformed coordinates                          
