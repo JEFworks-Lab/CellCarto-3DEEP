@@ -753,7 +753,9 @@ async function loadData() {
         // Initialize data structures
         allData = [];
         let headers = null;
-        let xIdx, yIdx, zIdx;
+        let currentXIdx, currentYIdx, currentZIdx;
+        let transformedXIdx = -1, transformedYIdx = -1, transformedZIdx = -1;
+        let originalXIdx = -1, originalYIdx = -1, originalZIdx = -1;
         const categoricalIndices = {};
         const continuousIndices = {};
         
@@ -770,23 +772,38 @@ async function loadData() {
             if (fileIndex === 0) {
                 headers = fileLines[0].split('\t');
                 
-                // Find column indices for coordinates
-                xIdx = headers.indexOf(idx_names[0]);
-                yIdx = headers.indexOf(idx_names[1]);
-                zIdx = headers.indexOf(idx_names[2]);
+                // Find column indices for ALL possible coordinate columns
+                // We'll store all of them so we can switch without reloading
+                transformedXIdx = headers.indexOf('transformedX');
+                transformedYIdx = headers.indexOf('transformedZ');
+                transformedZIdx = headers.indexOf('transformedY');
+                originalXIdx = headers.indexOf('x');
+                originalYIdx = headers.indexOf('z');
+                originalZIdx = headers.indexOf('y');
                 
-                // Validate that coordinate columns were found
-                if (xIdx === -1 || yIdx === -1 || zIdx === -1) {
+                // Find column indices for coordinates based on current idx_names
+                currentXIdx = headers.indexOf(idx_names[0]);
+                currentYIdx = headers.indexOf(idx_names[1]);
+                currentZIdx = headers.indexOf(idx_names[2]);
+                
+                // Validate that current coordinate columns were found
+                const hasCurrent = currentXIdx !== -1 && currentYIdx !== -1 && currentZIdx !== -1;
+                
+                if (!hasCurrent) {
                     const missing = [];
-                    if (xIdx === -1) missing.push(idx_names[0]);
-                    if (yIdx === -1) missing.push(idx_names[1]);
-                    if (zIdx === -1) missing.push(idx_names[2]);
-                    console.error(`Error: Coordinate columns not found: ${missing.join(', ')}`);
+                    if (currentXIdx === -1) missing.push(idx_names[0]);
+                    if (currentYIdx === -1) missing.push(idx_names[1]);
+                    if (currentZIdx === -1) missing.push(idx_names[2]);
+                    console.error(`Error: Current coordinate columns not found: ${missing.join(', ')}`);
                     console.error(`Available columns: ${headers.join(', ')}`);
                     throw new Error(`Coordinate columns not found: ${missing.join(', ')}`);
                 }
                 
-                console.log(`Coordinate column indices: ${idx_names[0]}=${xIdx}, ${idx_names[1]}=${yIdx}, ${idx_names[2]}=${zIdx}`);
+                console.log(`Coordinate column indices: ${idx_names[0]}=${currentXIdx}, ${idx_names[1]}=${currentYIdx}, ${idx_names[2]}=${currentZIdx}`);
+                const hasTransformed = transformedXIdx !== -1 && transformedYIdx !== -1 && transformedZIdx !== -1;
+                const hasOriginal = originalXIdx !== -1 && originalYIdx !== -1 && originalZIdx !== -1;
+                if (hasTransformed) console.log(`  Also found transformed coordinates: transformedX=${transformedXIdx}, transformedY=${transformedYIdx}, transformedZ=${transformedZIdx}`);
+                if (hasOriginal) console.log(`  Also found original coordinates: x=${originalXIdx}, y=${originalYIdx}, z=${originalZIdx}`);
                 
                 // Find column indices for categorical and continuous variables
                 column_names_categorical.forEach(col => {
@@ -817,14 +834,14 @@ async function loadData() {
                 const cols = line.split('\t');
                 if (cols.length < headers.length) continue;
                 
-                // Parse coordinates
-                const xStr = (cols[xIdx] || '').trim();
-                const yStr = (cols[yIdx] || '').trim();
-                const zStr = (cols[zIdx] || '').trim();
+                // Parse coordinates from current idx_names (for initial display)
+                const currentXStr = (cols[currentXIdx] || '').trim();
+                const currentYStr = (cols[currentYIdx] || '').trim();
+                const currentZStr = (cols[currentZIdx] || '').trim();
                 
-                const x = parseFloat(xStr);
-                const y = parseFloat(yStr);
-                const z = parseFloat(zStr);
+                const x = parseFloat(currentXStr);
+                const y = parseFloat(currentYStr);
+                const z = parseFloat(currentZStr);
                 
                 if (isNaN(x) || isNaN(y) || isNaN(z)) continue;
                 
@@ -833,6 +850,29 @@ async function loadData() {
                     y: y,
                     z: z
                 };
+                
+                // Store ALL coordinate columns for later remapping (without reloading)
+                if (transformedXIdx !== -1 && transformedYIdx !== -1 && transformedZIdx !== -1) {
+                    const tx = parseFloat((cols[transformedXIdx] || '').trim());
+                    const ty = parseFloat((cols[transformedYIdx] || '').trim());
+                    const tz = parseFloat((cols[transformedZIdx] || '').trim());
+                    if (!isNaN(tx) && !isNaN(ty) && !isNaN(tz)) {
+                        point._transformedX = tx;
+                        point._transformedY = ty;
+                        point._transformedZ = tz;
+                    }
+                }
+                
+                if (originalXIdx !== -1 && originalYIdx !== -1 && originalZIdx !== -1) {
+                    const ox = parseFloat((cols[originalXIdx] || '').trim());
+                    const oy = parseFloat((cols[originalYIdx] || '').trim());
+                    const oz = parseFloat((cols[originalZIdx] || '').trim());
+                    if (!isNaN(ox) && !isNaN(oy) && !isNaN(oz)) {
+                        point._originalX = ox;
+                        point._originalY = oy;
+                        point._originalZ = oz;
+                    }
+                }
                 
                 // Add categorical attributes
                 column_names_categorical.forEach(col => {
@@ -1819,10 +1859,80 @@ function updateFilter() {
     // Legend updates automatically when point cloud is recreated
 }
 
+// Remap coordinates from stored data without reloading files
+function remapCoordinates() {
+    console.log(`[Coordinates] Remapping coordinates to: ${idx_names.join(', ')}`);
+    
+    let remappedCount = 0;
+    let skippedCount = 0;
+    
+    for (let i = 0; i < allData.length; i++) {
+        const point = allData[i];
+        let newX, newY, newZ;
+        
+        if (idx_names[0] === 'transformedX' && idx_names[1] === 'transformedZ' && idx_names[2] === 'transformedY') {
+            // Use transformed coordinates
+            if (point._transformedX !== undefined && point._transformedY !== undefined && point._transformedZ !== undefined) {
+                newX = point._transformedX;
+                newY = point._transformedY;
+                newZ = point._transformedZ;
+                remappedCount++;
+            } else {
+                skippedCount++;
+                continue; // Skip points without transformed coordinates
+            }
+        } else if (idx_names[0] === 'x' && idx_names[1] === 'z' && idx_names[2] === 'y') {
+            // Use original coordinates
+            if (point._originalX !== undefined && point._originalY !== undefined && point._originalZ !== undefined) {
+                newX = point._originalX;
+                newY = point._originalY;
+                newZ = point._originalZ;
+                remappedCount++;
+            } else {
+                skippedCount++;
+                continue; // Skip points without original coordinates
+            }
+        } else {
+            console.warn(`[Coordinates] Unknown coordinate system: ${idx_names.join(', ')}`);
+            continue;
+        }
+        
+        // Update coordinates
+        point.x = newX;
+        point.y = newY;
+        point.z = newZ;
+    }
+    
+    console.log(`[Coordinates] Remapped ${remappedCount} points, skipped ${skippedCount} points without stored coordinates`);
+    
+    // Reset camera initialization
+    cameraInitialized = false;
+    
+    // Clear filters
+    activeFilters = [];
+    renderFilters();
+    
+    // Clear color map to regenerate colors
+    colorMap.clear();
+    
+    // Recreate point cloud with new coordinates
+    if (visibleIndices && visibleIndices.length > 0) {
+        // Reset visible indices to show all points
+        visibleIndices = new Uint32Array(allData.length);
+        for (let i = 0; i < allData.length; i++) {
+            visibleIndices[i] = i;
+        }
+        createPointCloud();
+    }
+    
+    // Update legend
+    updateLegend();
+}
+
 // Setup event listeners
 function setupEventListeners() {
     // Coordinate system change
-    document.getElementById('coordinateSystem').addEventListener('change', async (e) => {
+    document.getElementById('coordinateSystem').addEventListener('change', (e) => {
         const selectedSystem = e.target.value;
         console.log(`[Coordinates] Changing to: ${selectedSystem}`);
         
@@ -1835,34 +1945,8 @@ function setupEventListeners() {
         
         console.log(`[Coordinates] Using coordinate columns: ${idx_names.join(', ')}`);
         
-        // Reset camera initialization
-        cameraInitialized = false;
-        
-        // Clear filters
-        activeFilters = [];
-        renderFilters();
-        
-        // Clear color map to regenerate colors for new coordinates
-        colorMap.clear();
-        
-        // Reload data with new coordinates
-        const loadingEl = document.getElementById('loading');
-        let loadingText = loadingEl.querySelector('.loading-text');
-        if (!loadingText) {
-            loadingEl.innerHTML = '<div class="loading-spinner"></div><div class="loading-text">Loading data...</div>';
-            loadingText = loadingEl.querySelector('.loading-text');
-        }
-        loadingEl.style.display = 'flex';
-        loadingText.textContent = `Loading data with ${selectedSystem} coordinates...`;
-        
-        try {
-            // Reload data (will skip event listener setup since it's already initialized)
-            await loadData();
-        } catch (error) {
-            console.error('[Coordinates] Error reloading data:', error);
-            loadingText.textContent = 'Error loading data. Please check the console.';
-            loadingEl.style.background = 'rgba(231, 76, 60, 0.9)';
-        }
+        // Remap coordinates without reloading files
+        remapCoordinates();
     });
     
     // Randomize colors button
