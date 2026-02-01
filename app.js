@@ -3,16 +3,16 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // File paths - users can manually change this list
 const files = [
-    'data/20260113.hairfollicle.part01.tsv.gz',
-    'data/20260113.hairfollicle.part02.tsv.gz',
-    'data/20260113.hairfollicle.part03.tsv.gz',
-    'data/20260113.hairfollicle.part04.tsv.gz',
-    'data/20260113.hairfollicle.part05.tsv.gz',
-    'data/20260113.hairfollicle.part06.tsv.gz',
-    'data/20260113.hairfollicle.part07.tsv.gz',
-    'data/20260113.hairfollicle.part08.tsv.gz',
-    'data/20260113.hairfollicle.part09.tsv.gz',
-    'data/20260113.hairfollicle.part10.tsv.gz'
+    'data/20260126.hairfollicle_3.part01.tsv.gz',
+    'data/20260126.hairfollicle_3.part02.tsv.gz',
+    'data/20260126.hairfollicle_3.part03.tsv.gz',
+    'data/20260126.hairfollicle_3.part04.tsv.gz',
+    'data/20260126.hairfollicle_3.part05.tsv.gz',
+    'data/20260126.hairfollicle_3.part06.tsv.gz',
+    'data/20260126.hairfollicle_3.part07.tsv.gz',
+    'data/20260126.hairfollicle_3.part08.tsv.gz',
+    'data/20260126.hairfollicle_3.part09.tsv.gz',
+    'data/20260126.hairfollicle_3.part10.tsv.gz'
 ];
 
 // Configuration for downsampling
@@ -20,7 +20,7 @@ const TARGET_POINTS_PER_FILE = 200000; // Target number of points to keep per fi
 const MAX_POINTS = 2000000; // Reduce for performance
     
 // Column configuration - users can manually change these lists
-let idx_names = ['transformedX', 'transformedZ', 'transformedY']; // Default to transformed coordinates                          
+let idx_names = ['X_shifted', 'transformedZ', 'TimeRank']; // Default to transformed coordinates                          
 const column_names_categorical = ['Structure', 'HF', 'Sample', 'Group', 'CellType', 'Gene'];
 const column_names_continuous = ['Time'];
 
@@ -756,6 +756,7 @@ async function loadData() {
         let currentXIdx, currentYIdx, currentZIdx;
         let transformedXIdx = -1, transformedYIdx = -1, transformedZIdx = -1;
         let originalXIdx = -1, originalYIdx = -1, originalZIdx = -1;
+        let timeRankedXIdx = -1, timeRankedYIdx = -1, timeRankedZIdx = -1;
         const categoricalIndices = {};
         const continuousIndices = {};
         
@@ -780,6 +781,9 @@ async function loadData() {
                 originalXIdx = headers.indexOf('x');
                 originalYIdx = headers.indexOf('z');
                 originalZIdx = headers.indexOf('y');
+                timeRankedXIdx = headers.indexOf('X_shifted');
+                timeRankedYIdx = headers.indexOf('transformedZ');
+                timeRankedZIdx = headers.indexOf('TimeRank');
                 
                 // Find column indices for coordinates based on current idx_names
                 currentXIdx = headers.indexOf(idx_names[0]);
@@ -804,6 +808,8 @@ async function loadData() {
                 const hasOriginal = originalXIdx !== -1 && originalYIdx !== -1 && originalZIdx !== -1;
                 if (hasTransformed) console.log(`  Also found transformed coordinates: transformedX=${transformedXIdx}, transformedY=${transformedYIdx}, transformedZ=${transformedZIdx}`);
                 if (hasOriginal) console.log(`  Also found original coordinates: x=${originalXIdx}, y=${originalYIdx}, z=${originalZIdx}`);
+                const hasTimeRanked = timeRankedXIdx !== -1 && timeRankedYIdx !== -1 && timeRankedZIdx !== -1;
+                if (hasTimeRanked) console.log(`  Also found Time Ranked coordinates: X_shifted=${timeRankedXIdx}, transformedZ=${timeRankedYIdx}, TimeRank=${timeRankedZIdx}`);
                 
                 // Find column indices for categorical and continuous variables
                 column_names_categorical.forEach(col => {
@@ -871,6 +877,17 @@ async function loadData() {
                         point._originalX = ox;
                         point._originalY = oy;
                         point._originalZ = oz;
+                    }
+                }
+                
+                if (timeRankedXIdx !== -1 && timeRankedYIdx !== -1 && timeRankedZIdx !== -1) {
+                    const rx = parseFloat((cols[timeRankedXIdx] || '').trim());
+                    const ry = parseFloat((cols[timeRankedYIdx] || '').trim());
+                    const rz = parseFloat((cols[timeRankedZIdx] || '').trim());
+                    if (!isNaN(rx) && !isNaN(ry) && !isNaN(rz)) {
+                        point._timeRankedX = rx;
+                        point._timeRankedY = ry;
+                        point._timeRankedZ = rz;
                     }
                 }
                 
@@ -1892,6 +1909,17 @@ function remapCoordinates() {
                 skippedCount++;
                 continue; // Skip points without original coordinates
             }
+        } else if (idx_names[0] === 'X_shifted' && idx_names[1] === 'transformedZ' && idx_names[2] === 'TimeRank') {
+            // Use Time Ranked coordinates
+            if (point._timeRankedX !== undefined && point._timeRankedY !== undefined && point._timeRankedZ !== undefined) {
+                newX = point._timeRankedX;
+                newY = point._timeRankedY;
+                newZ = point._timeRankedZ;
+                remappedCount++;
+            } else {
+                skippedCount++;
+                continue; // Skip points without Time Ranked coordinates
+            }
         } else {
             console.warn(`[Coordinates] Unknown coordinate system: ${idx_names.join(', ')}`);
             continue;
@@ -1939,8 +1967,12 @@ function setupEventListeners() {
         // Update idx_names based on selection
         if (selectedSystem === 'transformed') {
             idx_names = ['transformedX', 'transformedZ', 'transformedY'];
-        } else {
+        } else if (selectedSystem === 'original') {
             idx_names = ['x', 'z', 'y'];
+        } else if (selectedSystem === 'timeRanked') {
+            idx_names = ['X_shifted', 'transformedZ', 'TimeRank'];
+        } else {
+            idx_names = ['X_shifted', 'transformedZ', 'TimeRank'];
         }
         
         console.log(`[Coordinates] Using coordinate columns: ${idx_names.join(', ')}`);
