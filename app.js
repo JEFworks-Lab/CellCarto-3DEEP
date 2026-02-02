@@ -1,32 +1,34 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { parquetRead } from 'https://esm.sh/hyparquet';
+import { compressors } from 'https://esm.sh/hyparquet-compressors';
 
-// File paths - users can manually change this list
-const files = [
-    'data/20260126.hairfollicle_3.part01.tsv.gz',
-    'data/20260126.hairfollicle_3.part02.tsv.gz',
-    'data/20260126.hairfollicle_3.part03.tsv.gz',
-    'data/20260126.hairfollicle_3.part04.tsv.gz',
-    'data/20260126.hairfollicle_3.part05.tsv.gz',
-    'data/20260126.hairfollicle_3.part06.tsv.gz',
-    'data/20260126.hairfollicle_3.part07.tsv.gz',
-    'data/20260126.hairfollicle_3.part08.tsv.gz',
-    'data/20260126.hairfollicle_3.part09.tsv.gz',
-    'data/20260126.hairfollicle_3.part10.tsv.gz'
+// Parquet shard files (each shard = 10% random sample, pre-shuffled)
+// Loading N shards = N * 10% sample rate
+const PARQUET_SHARDS = [
+    'data/hairfollicle.shard01.parquet',
+    'data/hairfollicle.shard02.parquet',
+    'data/hairfollicle.shard03.parquet',
+    'data/hairfollicle.shard04.parquet',
+    'data/hairfollicle.shard05.parquet',
+    'data/hairfollicle.shard06.parquet',
+    'data/hairfollicle.shard07.parquet',
+    'data/hairfollicle.shard08.parquet',
+    'data/hairfollicle.shard09.parquet',
+    'data/hairfollicle.shard10.parquet',
 ];
 
-// Configuration for downsampling
-const TARGET_POINTS_PER_FILE = 200000; // Target number of points to keep per file
-const MAX_POINTS = 2000000; // Reduce for performance
+// Configuration
+const MAX_POINTS = 8000000; // Max points to render for performance (reduced from 2M)
     
 // Column configuration - users can manually change these lists
-let idx_names = ['X_shifted', 'transformedZ', 'TimeRank']; // Default to transformed coordinates                          
+let idx_names = ['transformedX', 'transformedZ', 'transformedY']; // Default to transformed coordinates                          
 const column_names_categorical = ['Structure', 'HF', 'Sample', 'Group', 'CellType', 'Gene'];
 const column_names_continuous = ['Time'];
 
 // Global variables
 let scene, camera, renderer, controls;
-let points, pointCloud, sphereMesh;
+let points, pointCloud;
 let allData = [];
 let visibleIndices = null; // Will be Uint32Array
 let colorMap = new Map();
@@ -36,12 +38,22 @@ let cameraInitialized = false;
 let activeFilters = []; // Array of filter objects: { attribute, type: 'categorical'|'time', values/range }
 let initialCameraState = { position: null, target: null }; // Store initial camera state for reset
 let renderedIndicesMap = null; // Map from instance index to data index for hover detection
+let autoRotateEnabled = false; // Auto-rotation state
 let highlightSphere = null; // Sphere to highlight hovered point
 let tooltip = null; // Tooltip element
 let isShiftPressed = false; // Track SHIFT key state
 let raycaster = new THREE.Raycaster(); // For point picking
 let mouse = new THREE.Vector2(); // Mouse position for raycasting
 let eventListenersInitialized = false; // Track if event listeners have been set up
+
+// Lazy loading state
+let parquetBuffers = []; // Store downloaded buffers for lazy loading columns
+let loadedColumns = new Set(); // Track which columns have been loaded
+let isLoadingColumn = false; // Prevent concurrent column loads
+
+// Progressive shard loading state
+let loadedShardCount = 0; // How many shards are currently loaded
+let isLoadingShards = false; // Prevent concurrent shard loads
 
 // Initialize Three.js scene
 function initScene() {
@@ -73,6 +85,7 @@ function initScene() {
     controls.enableRotate = false;
     controls.enablePan = false; // We'll handle panning manually
     controls.enableZoom = true; // Enable zooming (mouse wheel)
+    controls.zoomSpeed = 3.0; // Faster zoom (default is 1.0)
     controls.screenSpacePanning = false;
     controls.panSpeed = 1.0; // Pan speed reference
     
@@ -275,6 +288,7 @@ function initScene() {
                 
                 if (Math.abs(deltaY) > 0) {
                     // Pan in y direction (world space)
+                    // Positive for Google Maps-like "grab and drag" behavior (screen Y is inverted from world Y)
                     const yPanAmount = deltaY * scaledPanSpeed;
                     console.log('[Camera Controls] Panning in Y direction:', yPanAmount.toFixed(4));
                     const yPanVector = new THREE.Vector3(0, yPanAmount, 0);
@@ -284,7 +298,8 @@ function initScene() {
                 
                 if (Math.abs(deltaX) > 0) {
                     // Pan in x direction (world space)
-                    const xPanAmount = deltaX * scaledPanSpeed;
+                    // Negate for Google Maps-like "grab and drag" behavior
+                    const xPanAmount = -deltaX * scaledPanSpeed;
                     console.log('[Camera Controls] Panning in X direction:', xPanAmount.toFixed(4));
                     const xPanVector = new THREE.Vector3(xPanAmount, 0, 0);
                     controls.target.add(xPanVector);
@@ -362,6 +377,7 @@ function initScene() {
                 camera.lookAt(controls.target);
             } else {
                 // Pan logic (same as mousemove)
+                // Google Maps-like "grab and drag" behavior
                 const cameraDistance = camera.position.distanceTo(controls.target);
                 const scaledPanSpeed = panSpeed * (cameraDistance * 0.01);
                 
@@ -373,7 +389,7 @@ function initScene() {
                 }
                 
                 if (Math.abs(deltaX) > 0) {
-                    const xPanAmount = deltaX * scaledPanSpeed;
+                    const xPanAmount = -deltaX * scaledPanSpeed;
                     const xPanVector = new THREE.Vector3(xPanAmount, 0, 0);
                     controls.target.add(xPanVector);
                     camera.position.add(xPanVector);
@@ -573,7 +589,7 @@ function onWindowResize() {
 // Handle hover detection when SHIFT is held
 function handleHover(event) {
     // Only handle hover if SHIFT is pressed and not dragging camera
-    if (!isShiftPressed || !sphereMesh || !renderedIndicesMap) {
+    if (!isShiftPressed || !pointCloud || !renderedIndicesMap) {
         hideHighlight();
         return;
     }
@@ -592,21 +608,23 @@ function handleHover(event) {
     mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     
-    // Update raycaster - for instanced meshes, we need to check intersections properly
+    // Update raycaster
     const pointSize = parseFloat(document.getElementById('pointSize')?.value || 1);
     raycaster.setFromCamera(mouse, camera);
     
-    // Check intersection with instanced mesh
-    // Note: Raycaster should automatically handle instanced meshes
+    // Set raycaster params for Points (threshold is the picking radius)
+    raycaster.params.Points.threshold = pointSize * 5;
+    
+    // Check intersection with Points object
     try {
-        const intersects = raycaster.intersectObject(sphereMesh, false);
+        const intersects = raycaster.intersectObject(pointCloud, false);
         
         if (intersects.length > 0) {
             const intersection = intersects[0];
-            const instanceId = intersection.instanceId;
+            const pointIndex = intersection.index; // For Points, use index instead of instanceId
             
-            if (instanceId !== undefined && instanceId !== null && instanceId < renderedIndicesMap.length) {
-                const dataIdx = renderedIndicesMap[instanceId];
+            if (pointIndex !== undefined && pointIndex !== null && pointIndex < renderedIndicesMap.length) {
+                const dataIdx = renderedIndicesMap[pointIndex];
                 if (dataIdx !== undefined && dataIdx < allData.length) {
                     const point = allData[dataIdx];
                     
@@ -617,7 +635,7 @@ function handleHover(event) {
                     // Log for debugging (only occasionally to avoid spam)
                     if (Math.random() < 0.01) { // Log 1% of the time
                         console.log('[Hover] Point highlighted:', {
-                            instanceId,
+                            pointIndex,
                             dataIdx,
                             position: `(${point.x.toFixed(2)}, ${point.y.toFixed(2)}, ${point.z.toFixed(2)})`
                         });
@@ -712,27 +730,351 @@ function hideHighlight() {
     }
 }
 
-// Helper function to load and decompress a gzipped file
-async function loadGzippedFile(url) {
+// Helper function to load a single Parquet file with progress tracking
+async function loadSingleParquetFile(url, fileIndex, progressCallback) {
     const response = await fetch(url);
     
     if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status} for ${url}`);
     }
     
-    if (!response.body) {
-        throw new Error('Response body is null');
+    const contentLength = response.headers.get('content-length');
+    const total = contentLength ? parseInt(contentLength, 10) : 0;
+    
+    // Read with progress tracking
+    const reader = response.body.getReader();
+    const chunks = [];
+    let loaded = 0;
+    
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        chunks.push(value);
+        loaded += value.length;
+        
+        if (progressCallback) {
+            progressCallback(fileIndex, loaded, total);
+        }
     }
     
-    const decompressionStream = new DecompressionStream('gzip');
-    const decompressedStream = response.body.pipeThrough(decompressionStream);
-    const decompressedResponse = new Response(decompressedStream);
-    const text = await decompressedResponse.text();
+    // Combine chunks into single ArrayBuffer
+    const buffer = new Uint8Array(loaded);
+    let offset = 0;
+    for (const chunk of chunks) {
+        buffer.set(chunk, offset);
+        offset += chunk.length;
+    }
     
-    return text;
+    return { buffer: buffer.buffer, size: loaded };
 }
 
-// Load and parse data with chunked processing
+// Download all Parquet files in parallel (without parsing)
+async function downloadAllParquetFiles(urls, onProgress) {
+    // Track progress for each file
+    const fileProgress = urls.map(() => ({ loaded: 0, total: 0 }));
+    
+    const updateProgress = (fileIndex, loaded, total) => {
+        fileProgress[fileIndex] = { loaded, total };
+        
+        // Calculate total progress
+        const totalLoaded = fileProgress.reduce((sum, p) => sum + p.loaded, 0);
+        const totalSize = fileProgress.reduce((sum, p) => sum + p.total, 0);
+        
+        if (onProgress && totalSize > 0) {
+            onProgress(totalLoaded, totalSize, fileProgress);
+        }
+    };
+    
+    console.log(`[Parquet] Starting parallel download of ${urls.length} files...`);
+    const startTime = Date.now();
+    
+    // Download all files in parallel
+    const downloadResults = await Promise.all(
+        urls.map((url, index) => loadSingleParquetFile(url, index, updateProgress))
+    );
+    
+    const totalSize = downloadResults.reduce((sum, r) => sum + r.size, 0);
+    const elapsed = (Date.now() - startTime) / 1000;
+    console.log(`[Parquet] Downloaded ${(totalSize / 1e6).toFixed(1)} MB in ${elapsed.toFixed(1)}s (${(totalSize / 1e6 / elapsed).toFixed(1)} MB/s)`);
+    
+    // Return buffers for later use
+    return downloadResults.map(r => r.buffer);
+}
+
+// Parse specific columns from parquet buffers
+async function parseParquetColumns(buffers, columns, onProgress) {
+    console.log(`[Parquet] Parsing columns: ${columns.join(', ')}`);
+    const startTime = Date.now();
+    
+    const allDataArrays = [];
+    
+    for (let i = 0; i < buffers.length; i++) {
+        const buffer = buffers[i];
+        
+        await parquetRead({
+            file: buffer,
+            compressors,
+            columns,
+            onComplete: (data) => {
+                if (onProgress) {
+                    onProgress(i + 1, buffers.length);
+                }
+                allDataArrays.push(data);
+            }
+        });
+    }
+    
+    // Concatenate all arrays
+    const totalRows = allDataArrays.reduce((sum, arr) => sum + arr.length, 0);
+    const elapsed = (Date.now() - startTime) / 1000;
+    console.log(`[Parquet] Parsed ${totalRows.toLocaleString()} rows in ${elapsed.toFixed(1)}s`);
+    
+    // Flatten by iterating (avoids stack overflow)
+    const allRows = new Array(totalRows);
+    let idx = 0;
+    for (const arr of allDataArrays) {
+        for (let i = 0; i < arr.length; i++) {
+            allRows[idx++] = arr[i];
+        }
+    }
+    
+    return allRows;
+}
+
+// Lazy load a column and merge into allData
+async function lazyLoadColumn(columnName) {
+    if (loadedColumns.has(columnName) || isLoadingColumn) {
+        return;
+    }
+    
+    console.log(`[Lazy Load] Loading column: ${columnName}`);
+    isLoadingColumn = true;
+    
+    const loadingEl = document.getElementById('loading');
+    const loadingText = loadingEl?.querySelector('.loading-text');
+    if (loadingEl && loadingText) {
+        loadingEl.style.display = 'flex';
+        loadingText.textContent = `Loading ${columnName} data...`;
+    }
+    
+    try {
+        const startTime = Date.now();
+        
+        // Parse just this column from all buffers
+        const columnData = await parseParquetColumns(parquetBuffers, [columnName], (current, total) => {
+            if (loadingText) {
+                loadingText.textContent = `Loading ${columnName}: file ${current}/${total}`;
+            }
+        });
+        
+        // Merge into allData
+        // Note: hyparquet returns arrays, so we access index 0 since we only requested one column
+        for (let i = 0; i < allData.length && i < columnData.length; i++) {
+            const value = columnData[i][0];
+            allData[i][columnName] = value;
+            
+            // Track unique values for categorical columns
+            if (column_names_categorical.includes(columnName) && value != null) {
+                const strValue = String(value);
+                allData[i][columnName] = strValue;
+                if (!attributeValues[columnName]) {
+                    attributeValues[columnName] = new Set();
+                }
+                attributeValues[columnName].add(strValue);
+            }
+            
+            // Track ranges for continuous columns
+            if (column_names_continuous.includes(columnName) && value != null) {
+                if (!continuousRanges[columnName]) {
+                    continuousRanges[columnName] = { min: Infinity, max: -Infinity };
+                }
+                continuousRanges[columnName].min = Math.min(continuousRanges[columnName].min, value);
+                continuousRanges[columnName].max = Math.max(continuousRanges[columnName].max, value);
+            }
+        }
+        
+        loadedColumns.add(columnName);
+        
+        const elapsed = (Date.now() - startTime) / 1000;
+        console.log(`[Lazy Load] Loaded ${columnName} in ${elapsed.toFixed(1)}s`);
+        
+    } finally {
+        isLoadingColumn = false;
+        if (loadingEl) {
+            loadingEl.style.display = 'none';
+        }
+    }
+}
+
+// Ensure a column is loaded (lazy load if needed)
+async function ensureColumnLoaded(columnName) {
+    if (!loadedColumns.has(columnName)) {
+        await lazyLoadColumn(columnName);
+    }
+}
+
+// Load additional shards to increase sample rate
+async function loadMoreShards(targetShardCount) {
+    if (isLoadingShards || targetShardCount <= loadedShardCount) {
+        return;
+    }
+    
+    // Cap at max shards
+    targetShardCount = Math.min(targetShardCount, PARQUET_SHARDS.length);
+    
+    const shardsToLoad = targetShardCount - loadedShardCount;
+    if (shardsToLoad <= 0) return;
+    
+    console.log(`[Shards] Loading ${shardsToLoad} more shards (${loadedShardCount + 1} to ${targetShardCount})...`);
+    isLoadingShards = true;
+    
+    const loadingEl = document.getElementById('loading');
+    const loadingText = loadingEl?.querySelector('.loading-text');
+    if (loadingEl && loadingText) {
+        loadingEl.style.display = 'flex';
+    }
+    
+    try {
+        const startTime = Date.now();
+        
+        // Get the shard URLs to load
+        const shardUrls = PARQUET_SHARDS.slice(loadedShardCount, targetShardCount);
+        
+        // Download shards in parallel
+        const newBuffers = await downloadAllParquetFiles(shardUrls, (loaded, total, fileProgress) => {
+            if (loadingText) {
+                const percent = Math.round((loaded / total) * 100);
+                const loadedMB = (loaded / 1e6).toFixed(1);
+                const totalMB = (total / 1e6).toFixed(1);
+                loadingText.textContent = `Loading more data: ${loadedMB} / ${totalMB} MB (${percent}%)`;
+            }
+        });
+        
+        // Add to our buffer collection
+        parquetBuffers.push(...newBuffers);
+        
+        // Parse the new shards with the columns we've already loaded
+        const columnsToLoad = Array.from(loadedColumns);
+        
+        if (loadingText) {
+            loadingText.textContent = 'Parsing new data...';
+        }
+        
+        const newRows = await parseParquetColumns(newBuffers, columnsToLoad, (current, total) => {
+            if (loadingText) {
+                loadingText.textContent = `Parsing shard ${loadedShardCount + current}/${targetShardCount}...`;
+            }
+        });
+        
+        // Process new rows and add to allData
+        if (loadingText) {
+            loadingText.textContent = 'Processing new points...';
+        }
+        
+        const defaultColorBy = column_names_categorical[0];
+        
+        // Create column index map (hyparquet returns arrays, not objects)
+        const colIdx = {};
+        columnsToLoad.forEach((col, idx) => {
+            colIdx[col] = idx;
+        });
+        
+        for (const row of newRows) {
+            // Access values by column index (hyparquet returns arrays)
+            const rowX = row[colIdx.x];
+            const rowY = row[colIdx.y];
+            const rowZ = row[colIdx.z];
+            const rowTransformedX = row[colIdx.transformedX];
+            const rowTransformedY = row[colIdx.transformedY];
+            const rowTransformedZ = row[colIdx.transformedZ];
+            const rowXShifted = row[colIdx.X_shifted];
+            const rowTimeRank = row[colIdx.TimeRank];
+            
+            // Get coordinates based on current coordinate system
+            let x, y, z;
+            if (idx_names[0] === 'X_shifted') {
+                x = rowXShifted ?? 0;
+                y = rowTransformedZ ?? 0;
+                z = rowTimeRank ?? 0;
+            } else if (idx_names[0] === 'transformedX') {
+                x = rowTransformedX ?? 0;
+                y = rowTransformedZ ?? 0;
+                z = rowTransformedY ?? 0;
+            } else {
+                x = rowX ?? 0;
+                y = rowZ ?? 0;
+                z = rowY ?? 0;
+            }
+            
+            const point = { x, y, z };
+            
+            // Store coordinate variants
+            point._originalX = rowX;
+            point._originalY = rowZ;
+            point._originalZ = rowY;
+            point._transformedX = rowTransformedX;
+            point._transformedY = rowTransformedZ;
+            point._transformedZ = rowTransformedY;
+            point._timeRankedX = rowXShifted;
+            point._timeRankedY = rowTransformedZ;
+            point._timeRankedZ = rowTimeRank;
+            
+            // Add loaded columns by index
+            for (const col of loadedColumns) {
+                const idx = colIdx[col];
+                if (idx === undefined) continue; // Column not in current request
+                
+                if (col === 'Time') {
+                    point[col] = row[idx];
+                } else if (column_names_categorical.includes(col)) {
+                    const value = row[idx];
+                    point[col] = value != null ? String(value) : '';
+                    if (value && attributeValues[col]) {
+                        attributeValues[col].add(point[col]);
+                    }
+                }
+            }
+            
+            allData.push(point);
+        }
+        
+        // Update visible indices to include new data
+        const oldLength = visibleIndices.length;
+        const newVisibleIndices = new Uint32Array(allData.length);
+        newVisibleIndices.set(visibleIndices);
+        for (let i = oldLength; i < allData.length; i++) {
+            newVisibleIndices[i] = i;
+        }
+        visibleIndices = newVisibleIndices;
+        
+        loadedShardCount = targetShardCount;
+        
+        const elapsed = (Date.now() - startTime) / 1000;
+        console.log(`[Shards] Loaded ${shardsToLoad} shards in ${elapsed.toFixed(1)}s. Total points: ${allData.length.toLocaleString()}`);
+        
+        // Update UI
+        document.getElementById('pointCount').textContent = `Total points: ${allData.length.toLocaleString()} (${loadedShardCount * 10}% loaded)`;
+        
+        // Recreate point cloud with new data
+        createPointCloud();
+        
+    } finally {
+        isLoadingShards = false;
+        if (loadingEl) {
+            loadingEl.style.display = 'none';
+        }
+    }
+}
+
+// Get required shard count for a given sample rate percentage
+function getShardsForSampleRate(sampleRatePercent) {
+    // Each shard is 10% of data
+    // sampleRate 1-10 = 1 shard, 11-20 = 2 shards, etc.
+    return Math.min(Math.ceil(sampleRatePercent / 10), PARQUET_SHARDS.length);
+}
+
+// Load and parse data from Parquet file
 async function loadData() {
     const loadingEl = document.getElementById('loading');
     let loadingText = loadingEl.querySelector('.loading-text');
@@ -745,226 +1087,164 @@ async function loadData() {
     
     // Ensure loading is visible
     loadingEl.style.display = 'flex';
-    loadingText.textContent = 'Loading data... This may take a moment.';
+    loadingText.textContent = 'Initializing...';
     
     try {
         const loadStartTime = Date.now();
         
         // Initialize data structures
         allData = [];
-        let headers = null;
-        let currentXIdx, currentYIdx, currentZIdx;
-        let transformedXIdx = -1, transformedYIdx = -1, transformedZIdx = -1;
-        let originalXIdx = -1, originalYIdx = -1, originalZIdx = -1;
-        let timeRankedXIdx = -1, timeRankedYIdx = -1, timeRankedZIdx = -1;
-        const categoricalIndices = {};
-        const continuousIndices = {};
         
-        // Process each file individually: load, parse, and downsample
-        for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
-            const file = files[fileIndex];
-            loadingText.textContent = `Loading and processing file ${fileIndex + 1}/${files.length}...`;
+        // Initialize attribute tracking
+        column_names_categorical.forEach(col => {
+            attributeValues[col] = new Set();
+        });
+        column_names_continuous.forEach(col => {
+            continuousRanges[col] = { min: Infinity, max: -Infinity };
+        });
+        
+        // Download only the first shard initially (10% sample)
+        // More shards will be loaded on-demand when user increases sample rate
+        const initialShards = [PARQUET_SHARDS[0]];
+        
+        parquetBuffers = await downloadAllParquetFiles(initialShards, (loaded, total, fileProgress) => {
+            const percent = Math.round((loaded / total) * 100);
+            const loadedMB = (loaded / 1e6).toFixed(1);
+            const totalMB = (total / 1e6).toFixed(1);
+            loadingText.textContent = `Downloading: ${loadedMB} / ${totalMB} MB (${percent}%)`;
+        });
+        
+        loadedShardCount = 1;
+        
+        // Define essential columns for initial load:
+        // - All coordinate columns (for coordinate system switching)
+        // - Default colorBy column (first categorical)
+        // - Time (continuous attribute)
+        const defaultColorBy = column_names_categorical[0]; // 'Structure'
+        const essentialColumns = [
+            'x', 'y', 'z',
+            'transformedX', 'transformedY', 'transformedZ',
+            'X_shifted', 'TimeRank',
+            'Time',
+            defaultColorBy
+        ];
+        
+        loadingText.textContent = 'Parsing essential columns...';
+        await new Promise(resolve => setTimeout(resolve, 0));
+        
+        // Parse only essential columns
+        const rows = await parseParquetColumns(parquetBuffers, essentialColumns, (current, total) => {
+            loadingText.textContent = `Parsing file ${current}/${total}...`;
+        });
+        
+        // Mark these columns as loaded
+        essentialColumns.forEach(col => loadedColumns.add(col));
+        
+        // Create column index map (hyparquet returns arrays, not objects)
+        // The array indices correspond to the order of columns we requested
+        const colIdx = {};
+        essentialColumns.forEach((col, idx) => {
+            colIdx[col] = idx;
+        });
+        
+        const numRows = rows.length;
+        console.log(`[Parquet] Processing ${numRows.toLocaleString()} rows`);
+        
+        loadingText.textContent = `Processing ${numRows.toLocaleString()} points...`;
+        await new Promise(resolve => setTimeout(resolve, 0));
+        
+        // Process rows in chunks to keep UI responsive
+        const CHUNK_SIZE = 500000;
+        
+        for (let startIdx = 0; startIdx < numRows; startIdx += CHUNK_SIZE) {
+            const endIdx = Math.min(startIdx + CHUNK_SIZE, numRows);
             
-            // Load file
-            const fileText = await loadGzippedFile(file);
-            const fileLines = fileText.split('\n');
-            
-            // Get headers from first file
-            if (fileIndex === 0) {
-                headers = fileLines[0].split('\t');
+            for (let i = startIdx; i < endIdx; i++) {
+                const row = rows[i];
                 
-                // Find column indices for ALL possible coordinate columns
-                // We'll store all of them so we can switch without reloading
-                transformedXIdx = headers.indexOf('transformedX');
-                transformedYIdx = headers.indexOf('transformedZ');
-                transformedZIdx = headers.indexOf('transformedY');
-                originalXIdx = headers.indexOf('x');
-                originalYIdx = headers.indexOf('z');
-                originalZIdx = headers.indexOf('y');
-                timeRankedXIdx = headers.indexOf('X_shifted');
-                timeRankedYIdx = headers.indexOf('transformedZ');
-                timeRankedZIdx = headers.indexOf('TimeRank');
+                // Access values by column index (hyparquet returns arrays)
+                const rowX = row[colIdx.x];
+                const rowY = row[colIdx.y];
+                const rowZ = row[colIdx.z];
+                const rowTransformedX = row[colIdx.transformedX];
+                const rowTransformedY = row[colIdx.transformedY];
+                const rowTransformedZ = row[colIdx.transformedZ];
+                const rowXShifted = row[colIdx.X_shifted];
+                const rowTimeRank = row[colIdx.TimeRank];
+                const rowTime = row[colIdx.Time];
+                const rowDefaultColorBy = row[colIdx[defaultColorBy]];
                 
-                // Find column indices for coordinates based on current idx_names
-                currentXIdx = headers.indexOf(idx_names[0]);
-                currentYIdx = headers.indexOf(idx_names[1]);
-                currentZIdx = headers.indexOf(idx_names[2]);
-                
-                // Validate that current coordinate columns were found
-                const hasCurrent = currentXIdx !== -1 && currentYIdx !== -1 && currentZIdx !== -1;
-                
-                if (!hasCurrent) {
-                    const missing = [];
-                    if (currentXIdx === -1) missing.push(idx_names[0]);
-                    if (currentYIdx === -1) missing.push(idx_names[1]);
-                    if (currentZIdx === -1) missing.push(idx_names[2]);
-                    console.error(`Error: Current coordinate columns not found: ${missing.join(', ')}`);
-                    console.error(`Available columns: ${headers.join(', ')}`);
-                    throw new Error(`Coordinate columns not found: ${missing.join(', ')}`);
+                // Get coordinates based on current coordinate system
+                let x, y, z;
+                if (idx_names[0] === 'X_shifted') {
+                    x = rowXShifted ?? 0;
+                    y = rowTransformedZ ?? 0;
+                    z = rowTimeRank ?? 0;
+                } else if (idx_names[0] === 'transformedX') {
+                    x = rowTransformedX ?? 0;
+                    y = rowTransformedZ ?? 0;
+                    z = rowTransformedY ?? 0;
+                } else {
+                    x = rowX ?? 0;
+                    y = rowZ ?? 0;
+                    z = rowY ?? 0;
                 }
                 
-                console.log(`Coordinate column indices: ${idx_names[0]}=${currentXIdx}, ${idx_names[1]}=${currentYIdx}, ${idx_names[2]}=${currentZIdx}`);
-                const hasTransformed = transformedXIdx !== -1 && transformedYIdx !== -1 && transformedZIdx !== -1;
-                const hasOriginal = originalXIdx !== -1 && originalYIdx !== -1 && originalZIdx !== -1;
-                if (hasTransformed) console.log(`  Also found transformed coordinates: transformedX=${transformedXIdx}, transformedY=${transformedYIdx}, transformedZ=${transformedZIdx}`);
-                if (hasOriginal) console.log(`  Also found original coordinates: x=${originalXIdx}, y=${originalYIdx}, z=${originalZIdx}`);
-                const hasTimeRanked = timeRankedXIdx !== -1 && timeRankedYIdx !== -1 && timeRankedZIdx !== -1;
-                if (hasTimeRanked) console.log(`  Also found Time Ranked coordinates: X_shifted=${timeRankedXIdx}, transformedZ=${timeRankedYIdx}, TimeRank=${timeRankedZIdx}`);
+                const point = { x, y, z };
                 
-                // Find column indices for categorical and continuous variables
-                column_names_categorical.forEach(col => {
-                    const idx = headers.indexOf(col);
-                    if (idx !== -1) {
-                        categoricalIndices[col] = idx;
-                        attributeValues[col] = new Set();
-                    }
-                });
+                // Store all coordinate variants for switching without reload
+                point._originalX = rowX;
+                point._originalY = rowZ;
+                point._originalZ = rowY;
                 
-                column_names_continuous.forEach(col => {
-                    const idx = headers.indexOf(col);
-                    if (idx !== -1) {
-                        continuousIndices[col] = idx;
-                        continuousRanges[col] = { min: Infinity, max: -Infinity };
-                    }
-                });
-            }
-            
-            // Parse and collect valid points from this file
-            const fileData = [];
-            const dataStartIdx = 1; // Skip header
-            
-            for (let i = dataStartIdx; i < fileLines.length; i++) {
-                const line = fileLines[i].trim();
-                if (!line) continue;
+                point._transformedX = rowTransformedX;
+                point._transformedY = rowTransformedZ;
+                point._transformedZ = rowTransformedY;
                 
-                const cols = line.split('\t');
-                if (cols.length < headers.length) continue;
+                point._timeRankedX = rowXShifted;
+                point._timeRankedY = rowTransformedZ;
+                point._timeRankedZ = rowTimeRank;
                 
-                // Parse coordinates from current idx_names (for initial display)
-                const currentXStr = (cols[currentXIdx] || '').trim();
-                const currentYStr = (cols[currentYIdx] || '').trim();
-                const currentZStr = (cols[currentZIdx] || '').trim();
-                
-                const x = parseFloat(currentXStr);
-                const y = parseFloat(currentYStr);
-                const z = parseFloat(currentZStr);
-                
-                if (isNaN(x) || isNaN(y) || isNaN(z)) continue;
-                
-                const point = {
-                    x: x,
-                    y: y,
-                    z: z
-                };
-                
-                // Store ALL coordinate columns for later remapping (without reloading)
-                if (transformedXIdx !== -1 && transformedYIdx !== -1 && transformedZIdx !== -1) {
-                    const tx = parseFloat((cols[transformedXIdx] || '').trim());
-                    const ty = parseFloat((cols[transformedYIdx] || '').trim());
-                    const tz = parseFloat((cols[transformedZIdx] || '').trim());
-                    if (!isNaN(tx) && !isNaN(ty) && !isNaN(tz)) {
-                        point._transformedX = tx;
-                        point._transformedY = ty;
-                        point._transformedZ = tz;
-                    }
+                // Add the default colorBy attribute (already loaded)
+                point[defaultColorBy] = rowDefaultColorBy != null ? String(rowDefaultColorBy) : '';
+                if (rowDefaultColorBy) {
+                    if (!attributeValues[defaultColorBy]) attributeValues[defaultColorBy] = new Set();
+                    attributeValues[defaultColorBy].add(point[defaultColorBy]);
                 }
                 
-                if (originalXIdx !== -1 && originalYIdx !== -1 && originalZIdx !== -1) {
-                    const ox = parseFloat((cols[originalXIdx] || '').trim());
-                    const oy = parseFloat((cols[originalYIdx] || '').trim());
-                    const oz = parseFloat((cols[originalZIdx] || '').trim());
-                    if (!isNaN(ox) && !isNaN(oy) && !isNaN(oz)) {
-                        point._originalX = ox;
-                        point._originalY = oy;
-                        point._originalZ = oz;
-                    }
+                // Add Time (continuous attribute)
+                point.Time = rowTime;
+                if (rowTime != null) {
+                    if (!continuousRanges.Time) continuousRanges.Time = { min: Infinity, max: -Infinity };
+                    continuousRanges.Time.min = Math.min(continuousRanges.Time.min, rowTime);
+                    continuousRanges.Time.max = Math.max(continuousRanges.Time.max, rowTime);
                 }
                 
-                if (timeRankedXIdx !== -1 && timeRankedYIdx !== -1 && timeRankedZIdx !== -1) {
-                    const rx = parseFloat((cols[timeRankedXIdx] || '').trim());
-                    const ry = parseFloat((cols[timeRankedYIdx] || '').trim());
-                    const rz = parseFloat((cols[timeRankedZIdx] || '').trim());
-                    if (!isNaN(rx) && !isNaN(ry) && !isNaN(rz)) {
-                        point._timeRankedX = rx;
-                        point._timeRankedY = ry;
-                        point._timeRankedZ = rz;
-                    }
-                }
-                
-                // Add categorical attributes
-                column_names_categorical.forEach(col => {
-                    if (categoricalIndices[col] !== undefined) {
-                        const value = cols[categoricalIndices[col]] || '';
-                        point[col] = value;
-                    }
-                });
-                
-                // Add continuous attributes
-                column_names_continuous.forEach(col => {
-                    if (continuousIndices[col] !== undefined) {
-                        const value = parseFloat(cols[continuousIndices[col]]);
-                        const numValue = isNaN(value) ? null : value;
-                        point[col] = numValue;
-                    }
-                });
-                
-                fileData.push(point);
-            }
-            
-            // Downsample this file's data randomly
-            let sampledData = fileData;
-            if (fileData.length > TARGET_POINTS_PER_FILE) {
-                // Randomly sample TARGET_POINTS_PER_FILE points
-                const indices = Array.from({ length: fileData.length }, (_, i) => i);
-                // Fisher-Yates shuffle for random sampling
-                for (let i = 0; i < TARGET_POINTS_PER_FILE && i < indices.length; i++) {
-                    const j = i + Math.floor(Math.random() * (indices.length - i));
-                    [indices[i], indices[j]] = [indices[j], indices[i]];
-                }
-                sampledData = indices.slice(0, TARGET_POINTS_PER_FILE).map(idx => fileData[idx]);
-                console.log(`Downsampled file ${fileIndex + 1}: ${fileData.length} -> ${sampledData.length} points`);
-            }
-            
-            // Add sampled data to allData
-            for (const point of sampledData) {
                 allData.push(point);
-                
-                // Collect unique values for categorical attributes
-                column_names_categorical.forEach(col => {
-                    if (point[col] && attributeValues[col]) {
-                        attributeValues[col].add(point[col]);
-                    }
-                });
-                
-                // Track ranges for continuous attributes
-                column_names_continuous.forEach(col => {
-                    if (point[col] !== null && point[col] !== undefined && continuousRanges[col]) {
-                        continuousRanges[col].min = Math.min(continuousRanges[col].min, point[col]);
-                        continuousRanges[col].max = Math.max(continuousRanges[col].max, point[col]);
-                    }
-                });
             }
             
-            // Log first few points from first file for debugging
-            if (fileIndex === 0 && allData.length > 0) {
-                for (let i = 0; i < Math.min(5, allData.length); i++) {
-                    const p = allData[i];
-                    console.log(`Sample point ${i + 1}: x=${p.x.toFixed(2)}, y=${p.y.toFixed(2)}, z=${p.z.toFixed(2)}`);
-                }
-            }
-            
-            // Yield to browser to prevent blocking
+            // Update progress
+            const percent = Math.round((endIdx / numRows) * 100);
+            loadingText.textContent = `Processing: ${endIdx.toLocaleString()} / ${numRows.toLocaleString()} points (${percent}%)`;
             await new Promise(resolve => setTimeout(resolve, 0));
         }
         
         const loadTime = ((Date.now() - loadStartTime) / 1000).toFixed(1);
-        console.log(`Loaded and processed ${files.length} files in ${loadTime}s. Total points: ${allData.length}`);
+        console.log(`[Parquet] Loaded ${allData.length.toLocaleString()} points in ${loadTime}s`);
+        
+        // Log sample points
+        if (allData.length > 0) {
+            for (let i = 0; i < Math.min(5, allData.length); i++) {
+                const p = allData[i];
+                console.log(`Sample point ${i + 1}: x=${p.x.toFixed(2)}, y=${p.y.toFixed(2)}, z=${p.z.toFixed(2)}`);
+            }
+        }
         
         loadingText.textContent = `Loaded ${allData.length.toLocaleString()} points. Initializing visualization...`;
-        document.getElementById('pointCount').textContent = `Total points: ${allData.length.toLocaleString()}`;
-        await new Promise(resolve => setTimeout(resolve, 100)); // Brief pause to show final message
+        document.getElementById('pointCount').textContent = `Total points: ${allData.length.toLocaleString()} (${loadedShardCount * 10}% loaded)`;
+        await new Promise(resolve => setTimeout(resolve, 100));
         
-        // Calculate and log coordinate ranges for verification
+        // Calculate and log coordinate ranges
         if (allData.length > 0) {
             let xMin = Infinity, xMax = -Infinity;
             let yMin = Infinity, yMax = -Infinity;
@@ -986,7 +1266,7 @@ async function loadData() {
             console.log(`  ${idx_names[2]}: [${zMin.toFixed(2)}, ${zMax.toFixed(2)}] (span: ${(zMax - zMin).toFixed(2)})`);
         }
         
-        // Initialize visible indices more efficiently
+        // Initialize visible indices
         visibleIndices = new Uint32Array(allData.length);
         for (let i = 0; i < allData.length; i++) {
             visibleIndices[i] = i;
@@ -1002,7 +1282,6 @@ async function loadData() {
             option.textContent = attr;
             colorBySelect.appendChild(option);
         });
-        // Set first attribute as default
         if (allAttributes.length > 0) {
             colorBySelect.value = allAttributes[0];
         }
@@ -1021,18 +1300,17 @@ async function loadData() {
         if (!eventListenersInitialized) {
             setupEventListeners();
             eventListenersInitialized = true;
-            // Start animation loop (only once)
             animate();
         }
         
-        // Hide loading message after a brief delay to show final render
+        // Hide loading message
         setTimeout(() => {
             loadingEl.style.display = 'none';
         }, 500);
         
     } catch (error) {
         console.error('Error loading data:', error);
-        loadingText.textContent = 'Error loading data. Please check the console.';
+        loadingText.textContent = `Error loading data: ${error.message}`;
         loadingEl.style.background = 'rgba(231, 76, 60, 0.9)';
         loadingEl.style.borderColor = 'rgba(192, 57, 43, 0.5)';
     }
@@ -1149,18 +1427,8 @@ function randomizeColors() {
         return;
     }
     
-    // Get all unique values for this attribute
-    const allValues = new Set();
-    if (visibleIndices && visibleIndices.length > 0) {
-        for (let i = 0; i < visibleIndices.length; i++) {
-            const point = allData[visibleIndices[i]];
-            const value = point[colorBy] || '';
-            if (value) {
-                allValues.add(value);
-            }
-        }
-    }
-    
+    // Use pre-computed unique values instead of iterating all points
+    const allValues = attributeValues[colorBy] || new Set();
     const sortedValues = Array.from(allValues).sort();
     const numValues = sortedValues.length;
     
@@ -1208,25 +1476,18 @@ function updateLegend() {
     if (!legendDiv) return;
     
     const colorBy = document.getElementById('colorBy').value;
-    
-    // Get unique values from visible data
-    const visibleValues = new Set();
     const isContinuous = column_names_continuous.includes(colorBy);
     
-    if (visibleIndices && visibleIndices.length > 0) {
-        for (let i = 0; i < visibleIndices.length; i++) {
-            const point = allData[visibleIndices[i]];
-            if (isContinuous) {
-                if (point[colorBy] !== null && point[colorBy] !== undefined) {
-                    visibleValues.add(point[colorBy]);
-                }
-            } else {
-                const value = point[colorBy] || '';
-                if (value) {
-                    visibleValues.add(value);
-                }
-            }
-        }
+    // Use pre-computed attribute values instead of iterating all points
+    // This avoids O(14M) iteration on every legend update
+    let visibleValues;
+    if (isContinuous) {
+        // For continuous values, use the pre-computed range
+        const range = continuousRanges[colorBy];
+        visibleValues = range ? new Set([range.min, range.max]) : new Set();
+    } else {
+        // For categorical values, use the pre-computed unique values
+        visibleValues = attributeValues[colorBy] || new Set();
     }
     
     legendDiv.innerHTML = '';
@@ -1380,16 +1641,11 @@ function setCameraToXYPlaneView(geometry) {
 
 // Create point cloud with spheres
 function createPointCloud() {
-    // Remove existing point cloud/spheres
+    // Remove existing point cloud
     if (pointCloud) {
         scene.remove(pointCloud);
         pointCloud.geometry.dispose();
         pointCloud.material.dispose();
-    }
-    if (sphereMesh) {
-        scene.remove(sphereMesh);
-        sphereMesh.geometry.dispose();
-        sphereMesh.material.dispose();
     }
     
     // Hide highlight when recreating point cloud
@@ -1404,91 +1660,85 @@ function createPointCloud() {
     
     const colorBy = document.getElementById('colorBy').value;
     const pointSize = parseFloat(document.getElementById('pointSize').value);
-    const sampleRate = Math.max(0.01, Math.min(1, parseInt(document.getElementById('sampleRate').value) / 100));
     
-    // Sample data based on sample rate
-    // For spheres, reduce max points slightly for performance
-    let indicesToRender = [];
+    // Since shards are pre-shuffled random samples, just render up to MAX_POINTS
+    // No additional sampling needed - the data itself is already a random sample
     const visibleCount = visibleIndices.length;
+    const renderCount = Math.min(visibleCount, MAX_POINTS);
     
-    // Calculate target count based on sample rate, but cap at MAX_POINTS for performance
-    // When sample rate is 100%, show all points (up to MAX_POINTS limit for performance)
-    const targetCount = Math.min(Math.floor(visibleCount * sampleRate), MAX_POINTS);
-    
-    if (targetCount >= visibleCount) {
-        // If target is >= all points (100% sample rate and within limits), use all visible indices
-        indicesToRender = Array.from(visibleIndices);
-    } else {
-        // Randomly sample targetCount points from visible indices
-        // Convert Uint32Array to regular array for shuffling
-        const allVisibleIndices = Array.from(visibleIndices);
-        
-        // Fisher-Yates shuffle algorithm for random sampling
-        // We only need to shuffle the first targetCount elements
-        for (let i = 0; i < targetCount && i < allVisibleIndices.length; i++) {
-            // Pick a random index from remaining unshuffled portion
-            const j = i + Math.floor(Math.random() * (allVisibleIndices.length - i));
-            // Swap
-            [allVisibleIndices[i], allVisibleIndices[j]] = [allVisibleIndices[j], allVisibleIndices[i]];
-        }
-        
-        // Take the first targetCount elements (which are now randomly selected)
-        indicesToRender = allVisibleIndices.slice(0, targetCount);
-    }
+    // Take the first renderCount points (they're already randomly ordered from shuffle)
+    const indicesToRender = visibleIndices.subarray(0, renderCount);
     
     const count = indicesToRender.length;
     
-    // Create sphere geometry for instancing
-    const sphereGeometry = new THREE.SphereGeometry(pointSize, 8, 6); // radius, widthSegments, heightSegments
-    
-    // Create instanced mesh
-    sphereMesh = new THREE.InstancedMesh(sphereGeometry, null, count);
-    
-    // Create material with instanced colors support
-    const material = new THREE.MeshPhongMaterial({
-        color: 0xffffff, // Base color (will be overridden by instance colors)
-        transparent: true,
-        opacity: 0.8,
-        flatShading: true // Use flat shading for better performance
-    });
-    sphereMesh.material = material;
-    
-    // Enable instanced colors
-    const colors = new Float32Array(count * 3);
-    
-    // Set up instance matrices and colors
-    const matrix = new THREE.Matrix4();
-    
-    // Create geometry for bounding box calculation
+    // Create BufferGeometry for THREE.Points (much more efficient than InstancedMesh with spheres)
+    const geometry = new THREE.BufferGeometry();
     const positions = new Float32Array(count * 3);
+    const colors = new Float32Array(count * 3);
     
     for (let i = 0; i < count; i++) {
         const dataIdx = indicesToRender[i];
         const point = allData[dataIdx];
         
         // Set position
-        matrix.makeTranslation(point.x, point.y, point.z);
-        sphereMesh.setMatrixAt(i, matrix);
+        positions[i * 3] = point.x;
+        positions[i * 3 + 1] = point.y;
+        positions[i * 3 + 2] = point.z;
         
         // Set color
         const valueForColor = point[colorBy];
         const pointColor = getColorForValue(valueForColor, colorBy);
-        sphereMesh.setColorAt(i, pointColor);
-        
-        // Store position for bounding box
-        positions[i * 3] = point.x;
-        positions[i * 3 + 1] = point.y;
-        positions[i * 3 + 2] = point.z;
+        colors[i * 3] = pointColor.r;
+        colors[i * 3 + 1] = pointColor.g;
+        colors[i * 3 + 2] = pointColor.b;
     }
     
-    // Update instance matrices and colors
-    sphereMesh.instanceMatrix.needsUpdate = true;
-    if (sphereMesh.instanceColor) {
-        sphereMesh.instanceColor.needsUpdate = true;
-    }
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     
-    scene.add(sphereMesh);
-    pointCloud = sphereMesh; // Keep reference for cleanup
+    // Create ShaderMaterial for circular points with smooth edges
+    const material = new THREE.ShaderMaterial({
+        uniforms: {
+            pointSize: { value: pointSize * 2 },
+            opacity: { value: 0.8 }
+        },
+        vertexShader: `
+            attribute vec3 color;
+            varying vec3 vColor;
+            uniform float pointSize;
+            
+            void main() {
+                vColor = color;
+                vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                gl_PointSize = pointSize * (300.0 / -mvPosition.z); // Size attenuation
+                gl_Position = projectionMatrix * mvPosition;
+            }
+        `,
+        fragmentShader: `
+            varying vec3 vColor;
+            uniform float opacity;
+            
+            void main() {
+                // Calculate distance from center of point (gl_PointCoord is 0-1)
+                vec2 center = gl_PointCoord - vec2(0.5);
+                float dist = length(center);
+                
+                // Discard pixels outside the circle
+                if (dist > 0.5) discard;
+                
+                // Smooth edge (anti-aliasing)
+                float alpha = opacity * (1.0 - smoothstep(0.45, 0.5, dist));
+                
+                gl_FragColor = vec4(vColor, alpha);
+            }
+        `,
+        transparent: true,
+        depthWrite: false, // Better blending for transparent points
+    });
+    
+    // Create the Points object
+    pointCloud = new THREE.Points(geometry, material);
+    scene.add(pointCloud);
     
     // Store mapping from instance index to data index for hover detection
     renderedIndicesMap = indicesToRender;
@@ -1497,9 +1747,9 @@ function createPointCloud() {
     updateLegend();
     
     // Update info
-    const isSampled = indicesToRender.length < visibleIndices.length;
+    const isCapped = indicesToRender.length < visibleIndices.length;
     document.getElementById('visibleCount').textContent = 
-        `Visible points: ${indicesToRender.length.toLocaleString()}${isSampled ? ` (sampled from ${visibleIndices.length.toLocaleString()})` : ''}`;
+        `Rendering: ${indicesToRender.length.toLocaleString()} points${isCapped ? ` (capped at ${MAX_POINTS.toLocaleString()})` : ''}`;
     
     // Auto-adjust camera for x-y plane view only on first render
     if (!cameraInitialized) {
@@ -1643,9 +1893,14 @@ function attachFilterEventListeners() {
         const newSelect = select.cloneNode(true);
         select.parentNode.replaceChild(newSelect, select);
         
-        newSelect.addEventListener('change', (e) => {
+        newSelect.addEventListener('change', async (e) => {
             const filterId = e.target.dataset.filterId;
             const attribute = e.target.value;
+            
+            // Lazy load the column if not already loaded
+            if (attribute && !loadedColumns.has(attribute)) {
+                await lazyLoadColumn(attribute);
+            }
             
             const filter = activeFilters.find(f => f.id === filterId);
             if (filter) {
@@ -1989,12 +2244,18 @@ function setupEventListeners() {
         });
     }
     
-    document.getElementById('colorBy').addEventListener('change', () => {
-        // Update colors immediately for color changes (no throttle needed, just recolor)
+    document.getElementById('colorBy').addEventListener('change', async () => {
+        const colorBy = document.getElementById('colorBy').value;
+        
+        // Lazy load the column if not already loaded
+        if (!loadedColumns.has(colorBy)) {
+            await lazyLoadColumn(colorBy);
+        }
+        
+        // Update colors
         if (pointCloud) {
             createPointCloud();
         } else {
-            // If no point cloud yet, just update legend
             updateLegend();
         }
     });
@@ -2018,16 +2279,28 @@ function setupEventListeners() {
     });
     
     document.getElementById('pointSize').addEventListener('input', (e) => {
-        document.getElementById('pointSizeValue').textContent = parseFloat(e.target.value).toFixed(1);
-        // Recreate point cloud with new size
-        if (visibleIndices && visibleIndices.length > 0) {
-            throttleFilterUpdate();
+        const newSize = parseFloat(e.target.value);
+        document.getElementById('pointSizeValue').textContent = newSize.toFixed(1);
+        // Update shader uniform directly for instant response (no need to recreate point cloud)
+        if (pointCloud && pointCloud.material && pointCloud.material.uniforms) {
+            pointCloud.material.uniforms.pointSize.value = newSize * 2;
         }
     });
     
-    document.getElementById('sampleRate').addEventListener('input', (e) => {
-        document.getElementById('sampleRateValue').textContent = e.target.value + '%';
-        throttleFilterUpdate();
+    document.getElementById('sampleRate').addEventListener('input', async (e) => {
+        const sampleRatePercent = parseInt(e.target.value);
+        document.getElementById('sampleRateValue').textContent = sampleRatePercent + '%';
+        
+        // Calculate how many shards we need for this sample rate
+        const requiredShards = getShardsForSampleRate(sampleRatePercent);
+        
+        // Load more shards if needed
+        if (requiredShards > loadedShardCount) {
+            await loadMoreShards(requiredShards);
+        } else {
+            // Just re-render with current data
+            createPointCloud();
+        }
     });
     
     
@@ -2065,11 +2338,40 @@ function setupEventListeners() {
             controls.update();
         }
     });
+    
+    // Auto-rotate checkbox
+    document.getElementById('autoRotate').addEventListener('change', (e) => {
+        autoRotateEnabled = e.target.checked;
+        console.log('[Camera] Auto-rotate:', autoRotateEnabled ? 'enabled' : 'disabled');
+    });
 }
 
 // Animation loop
 function animate() {
     requestAnimationFrame(animate);
+    
+    // Auto-rotation: rotate camera around the target
+    if (autoRotateEnabled && controls && controls.target) {
+        const rotationSpeed = 0.002; // Radians per frame
+        
+        // Get camera's offset from target
+        const offset = new THREE.Vector3();
+        offset.subVectors(camera.position, controls.target);
+        
+        // Rotate around Y axis
+        const angle = rotationSpeed;
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+        const x = offset.x * cos - offset.z * sin;
+        const z = offset.x * sin + offset.z * cos;
+        offset.x = x;
+        offset.z = z;
+        
+        // Update camera position
+        camera.position.copy(controls.target).add(offset);
+        camera.lookAt(controls.target);
+    }
+    
     controls.update();
     renderer.render(scene, camera);
 }

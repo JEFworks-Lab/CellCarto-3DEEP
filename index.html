@@ -50,8 +50,8 @@
                 <div class="control-group">
                     <label for="coordinateSystem">Coordinates:</label>
                     <select id="coordinateSystem">
-                        <option value="transformed">Transformed (transformedX, transformedZ, transformedY)</option>
-                        <option value="timeRanked" selected>Time Ranked (X_shifted, transformedZ, TimeRank)</option>
+                        <option value="transformed" selected>Transformed (transformedX, transformedZ, transformedY)</option>
+                        <option value="timeRanked">Time Ranked (X_shifted, transformedZ, TimeRank)</option>
                         <option value="original">Original (x, z, y)</option>
                     </select>
                 </div>
@@ -75,8 +75,8 @@
                 </div>
 
                 <div class="control-group">
-                    <label for="sampleRate">Sample Rate (for performance):</label>
-                    <input type="range" id="sampleRate" min="1" max="100" step="1" value="10">
+                    <label for="sampleRate">Data Loaded:</label>
+                    <input type="range" id="sampleRate" min="10" max="100" step="10" value="10">
                     <span id="sampleRateValue">10%</span>
                 </div>
 
@@ -87,6 +87,13 @@
 
                 <div class="control-group">
                     <button id="resetCamera">Reset Camera</button>
+                </div>
+
+                <div class="control-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="autoRotate">
+                        Auto-rotate
+                    </label>
                 </div>
             </div>
         </div>
