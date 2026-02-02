@@ -50,8 +50,8 @@
                 <div class="control-group">
                     <label for="coordinateSystem">Coordinates:</label>
                     <select id="coordinateSystem">
-                        <option value="transformed">Transformed (transformedX, transformedZ, transformedY)</option>
-                        <option value="timeRanked" selected>Time Ranked (X_shifted, transformedZ, TimeRank)</option>
+                        <option value="transformed" selected>Transformed (transformedX, transformedZ, transformedY)</option>
+                        <option value="timeRanked">Time Ranked (X_shifted, transformedZ, TimeRank)</option>
                         <option value="original">Original (x, z, y)</option>
                     </select>
                 </div>
@@ -87,6 +87,13 @@
 
                 <div class="control-group">
                     <button id="resetCamera">Reset Camera</button>
+                </div>
+
+                <div class="control-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="autoRotate">
+                        Auto-rotate
+                    </label>
                 </div>
             </div>
         </div>

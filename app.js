@@ -19,10 +19,10 @@ const PARQUET_SHARDS = [
 ];
 
 // Configuration
-const MAX_POINTS = 2000000; // Max points to render for performance (reduced from 2M)
+const MAX_POINTS = 4000000; // Max points to render for performance (reduced from 2M)
     
 // Column configuration - users can manually change these lists
-let idx_names = ['X_shifted', 'transformedZ', 'TimeRank']; // Default to transformed coordinates                          
+let idx_names = ['transformedX', 'transformedZ', 'transformedY']; // Default to transformed coordinates                          
 const column_names_categorical = ['Structure', 'HF', 'Sample', 'Group', 'CellType', 'Gene'];
 const column_names_continuous = ['Time'];
 
@@ -38,6 +38,7 @@ let cameraInitialized = false;
 let activeFilters = []; // Array of filter objects: { attribute, type: 'categorical'|'time', values/range }
 let initialCameraState = { position: null, target: null }; // Store initial camera state for reset
 let renderedIndicesMap = null; // Map from instance index to data index for hover detection
+let autoRotateEnabled = false; // Auto-rotation state
 let highlightSphere = null; // Sphere to highlight hovered point
 let tooltip = null; // Tooltip element
 let isShiftPressed = false; // Track SHIFT key state
@@ -1695,13 +1696,44 @@ function createPointCloud() {
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     
-    // Create PointsMaterial with circular points using a shader
-    const material = new THREE.PointsMaterial({
-        size: pointSize * 2, // Adjust size for visibility
-        vertexColors: true,
+    // Create ShaderMaterial for circular points with smooth edges
+    const material = new THREE.ShaderMaterial({
+        uniforms: {
+            pointSize: { value: pointSize * 2 },
+            opacity: { value: 0.8 }
+        },
+        vertexShader: `
+            attribute vec3 color;
+            varying vec3 vColor;
+            uniform float pointSize;
+            
+            void main() {
+                vColor = color;
+                vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                gl_PointSize = pointSize * (300.0 / -mvPosition.z); // Size attenuation
+                gl_Position = projectionMatrix * mvPosition;
+            }
+        `,
+        fragmentShader: `
+            varying vec3 vColor;
+            uniform float opacity;
+            
+            void main() {
+                // Calculate distance from center of point (gl_PointCoord is 0-1)
+                vec2 center = gl_PointCoord - vec2(0.5);
+                float dist = length(center);
+                
+                // Discard pixels outside the circle
+                if (dist > 0.5) discard;
+                
+                // Smooth edge (anti-aliasing)
+                float alpha = opacity * (1.0 - smoothstep(0.45, 0.5, dist));
+                
+                gl_FragColor = vec4(vColor, alpha);
+            }
+        `,
         transparent: true,
-        opacity: 0.8,
-        sizeAttenuation: true, // Points get smaller with distance
+        depthWrite: false, // Better blending for transparent points
     });
     
     // Create the Points object
@@ -2247,10 +2279,11 @@ function setupEventListeners() {
     });
     
     document.getElementById('pointSize').addEventListener('input', (e) => {
-        document.getElementById('pointSizeValue').textContent = parseFloat(e.target.value).toFixed(1);
-        // Recreate point cloud with new size
-        if (visibleIndices && visibleIndices.length > 0) {
-            throttleFilterUpdate();
+        const newSize = parseFloat(e.target.value);
+        document.getElementById('pointSizeValue').textContent = newSize.toFixed(1);
+        // Update shader uniform directly for instant response (no need to recreate point cloud)
+        if (pointCloud && pointCloud.material && pointCloud.material.uniforms) {
+            pointCloud.material.uniforms.pointSize.value = newSize * 2;
         }
     });
     
@@ -2305,11 +2338,40 @@ function setupEventListeners() {
             controls.update();
         }
     });
+    
+    // Auto-rotate checkbox
+    document.getElementById('autoRotate').addEventListener('change', (e) => {
+        autoRotateEnabled = e.target.checked;
+        console.log('[Camera] Auto-rotate:', autoRotateEnabled ? 'enabled' : 'disabled');
+    });
 }
 
 // Animation loop
 function animate() {
     requestAnimationFrame(animate);
+    
+    // Auto-rotation: rotate camera around the target
+    if (autoRotateEnabled && controls && controls.target) {
+        const rotationSpeed = 0.002; // Radians per frame
+        
+        // Get camera's offset from target
+        const offset = new THREE.Vector3();
+        offset.subVectors(camera.position, controls.target);
+        
+        // Rotate around Y axis
+        const angle = rotationSpeed;
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+        const x = offset.x * cos - offset.z * sin;
+        const z = offset.x * sin + offset.z * cos;
+        offset.x = x;
+        offset.z = z;
+        
+        // Update camera position
+        camera.position.copy(controls.target).add(offset);
+        camera.lookAt(controls.target);
+    }
+    
     controls.update();
     renderer.render(scene, camera);
 }
