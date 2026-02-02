@@ -19,7 +19,7 @@ const PARQUET_SHARDS = [
 ];
 
 // Configuration
-const MAX_POINTS = 4000000; // Max points to render for performance (reduced from 2M)
+const MAX_POINTS = 8000000; // Max points to render for performance (reduced from 2M)
     
 // Column configuration - users can manually change these lists
 let idx_names = ['transformedX', 'transformedZ', 'transformedY']; // Default to transformed coordinates                          
