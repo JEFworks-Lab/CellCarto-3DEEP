@@ -28,7 +28,7 @@ const column_names_continuous = ['Time'];
 
 // Global variables
 let scene, camera, renderer, controls;
-let points, pointCloud, sphereMesh;
+let points, pointCloud;
 let allData = [];
 let visibleIndices = null; // Will be Uint32Array
 let colorMap = new Map();
@@ -588,7 +588,7 @@ function onWindowResize() {
 // Handle hover detection when SHIFT is held
 function handleHover(event) {
     // Only handle hover if SHIFT is pressed and not dragging camera
-    if (!isShiftPressed || !sphereMesh || !renderedIndicesMap) {
+    if (!isShiftPressed || !pointCloud || !renderedIndicesMap) {
         hideHighlight();
         return;
     }
@@ -607,21 +607,23 @@ function handleHover(event) {
     mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     
-    // Update raycaster - for instanced meshes, we need to check intersections properly
+    // Update raycaster
     const pointSize = parseFloat(document.getElementById('pointSize')?.value || 1);
     raycaster.setFromCamera(mouse, camera);
     
-    // Check intersection with instanced mesh
-    // Note: Raycaster should automatically handle instanced meshes
+    // Set raycaster params for Points (threshold is the picking radius)
+    raycaster.params.Points.threshold = pointSize * 5;
+    
+    // Check intersection with Points object
     try {
-        const intersects = raycaster.intersectObject(sphereMesh, false);
+        const intersects = raycaster.intersectObject(pointCloud, false);
         
         if (intersects.length > 0) {
             const intersection = intersects[0];
-            const instanceId = intersection.instanceId;
+            const pointIndex = intersection.index; // For Points, use index instead of instanceId
             
-            if (instanceId !== undefined && instanceId !== null && instanceId < renderedIndicesMap.length) {
-                const dataIdx = renderedIndicesMap[instanceId];
+            if (pointIndex !== undefined && pointIndex !== null && pointIndex < renderedIndicesMap.length) {
+                const dataIdx = renderedIndicesMap[pointIndex];
                 if (dataIdx !== undefined && dataIdx < allData.length) {
                     const point = allData[dataIdx];
                     
@@ -632,7 +634,7 @@ function handleHover(event) {
                     // Log for debugging (only occasionally to avoid spam)
                     if (Math.random() < 0.01) { // Log 1% of the time
                         console.log('[Hover] Point highlighted:', {
-                            instanceId,
+                            pointIndex,
                             dataIdx,
                             position: `(${point.x.toFixed(2)}, ${point.y.toFixed(2)}, ${point.z.toFixed(2)})`
                         });
@@ -1638,16 +1640,11 @@ function setCameraToXYPlaneView(geometry) {
 
 // Create point cloud with spheres
 function createPointCloud() {
-    // Remove existing point cloud/spheres
+    // Remove existing point cloud
     if (pointCloud) {
         scene.remove(pointCloud);
         pointCloud.geometry.dispose();
         pointCloud.material.dispose();
-    }
-    if (sphereMesh) {
-        scene.remove(sphereMesh);
-        sphereMesh.geometry.dispose();
-        sphereMesh.material.dispose();
     }
     
     // Hide highlight when recreating point cloud
@@ -1673,57 +1670,43 @@ function createPointCloud() {
     
     const count = indicesToRender.length;
     
-    // Create sphere geometry for instancing (low-poly for performance)
-    const sphereGeometry = new THREE.SphereGeometry(pointSize, 4, 3); // radius, widthSegments, heightSegments (reduced from 8,6)
-    
-    // Create instanced mesh
-    sphereMesh = new THREE.InstancedMesh(sphereGeometry, null, count);
-    
-    // Create material with instanced colors support
-    const material = new THREE.MeshPhongMaterial({
-        color: 0xffffff, // Base color (will be overridden by instance colors)
-        transparent: true,
-        opacity: 0.8,
-        flatShading: true // Use flat shading for better performance
-    });
-    sphereMesh.material = material;
-    
-    // Enable instanced colors
-    const colors = new Float32Array(count * 3);
-    
-    // Set up instance matrices and colors
-    const matrix = new THREE.Matrix4();
-    
-    // Create geometry for bounding box calculation
+    // Create BufferGeometry for THREE.Points (much more efficient than InstancedMesh with spheres)
+    const geometry = new THREE.BufferGeometry();
     const positions = new Float32Array(count * 3);
+    const colors = new Float32Array(count * 3);
     
     for (let i = 0; i < count; i++) {
         const dataIdx = indicesToRender[i];
         const point = allData[dataIdx];
         
         // Set position
-        matrix.makeTranslation(point.x, point.y, point.z);
-        sphereMesh.setMatrixAt(i, matrix);
+        positions[i * 3] = point.x;
+        positions[i * 3 + 1] = point.y;
+        positions[i * 3 + 2] = point.z;
         
         // Set color
         const valueForColor = point[colorBy];
         const pointColor = getColorForValue(valueForColor, colorBy);
-        sphereMesh.setColorAt(i, pointColor);
-        
-        // Store position for bounding box
-        positions[i * 3] = point.x;
-        positions[i * 3 + 1] = point.y;
-        positions[i * 3 + 2] = point.z;
+        colors[i * 3] = pointColor.r;
+        colors[i * 3 + 1] = pointColor.g;
+        colors[i * 3 + 2] = pointColor.b;
     }
     
-    // Update instance matrices and colors
-    sphereMesh.instanceMatrix.needsUpdate = true;
-    if (sphereMesh.instanceColor) {
-        sphereMesh.instanceColor.needsUpdate = true;
-    }
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     
-    scene.add(sphereMesh);
-    pointCloud = sphereMesh; // Keep reference for cleanup
+    // Create PointsMaterial with circular points using a shader
+    const material = new THREE.PointsMaterial({
+        size: pointSize * 2, // Adjust size for visibility
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.8,
+        sizeAttenuation: true, // Points get smaller with distance
+    });
+    
+    // Create the Points object
+    pointCloud = new THREE.Points(geometry, material);
+    scene.add(pointCloud);
     
     // Store mapping from instance index to data index for hover detection
     renderedIndicesMap = indicesToRender;
