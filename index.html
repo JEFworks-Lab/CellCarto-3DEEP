@@ -48,12 +48,20 @@
                 <h2>Controls</h2>
                 
                 <div class="control-group">
-                    <label for="coordinateSystem">Coordinates:</label>
-                    <select id="coordinateSystem">
-                        <option value="transformed" selected>Transformed (transformedX, transformedZ, transformedY)</option>
-                        <option value="timeRanked">Time Ranked (X_shifted, transformedZ, TimeRank)</option>
-                        <option value="original">Original (x, z, y)</option>
-                    </select>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
+                        <div>
+                            <label for="coordX">X-Axis:</label>
+                            <select id="coordX" style="width: 100%;"></select>
+                        </div>
+                        <div>
+                            <label for="coordZ">Y-Axis:</label>
+                            <select id="coordZ" style="width: 100%;"></select>
+                        </div>
+                        <div>
+                            <label for="coordY">Z-Axis:</label>
+                            <select id="coordY" style="width: 100%;"></select>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="control-group">

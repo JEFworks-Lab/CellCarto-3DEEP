@@ -22,7 +22,10 @@ const PARQUET_SHARDS = [
 const MAX_POINTS = 8000000; // Max points to render for performance (reduced from 2M)
     
 // Column configuration - users can manually change these lists
-let idx_names = ['transformedX', 'transformedZ', 'transformedY']; // Default to transformed coordinates                          
+const COORD_COLUMN_OPTIONS = ['x', 'y', 'z', 'transformedX', 'transformedY', 'transformedZ', 'Adj_transformedZ', 'X_shifted', 'TimeRank'];
+let selectedCoordX = 'transformedX';
+let selectedCoordY = 'transformedZ';
+let selectedCoordZ = 'transformedY';
 const column_names_categorical = ['Structure', 'HF', 'Sample', 'Group', 'CellType', 'Gene'];
 const column_names_continuous = ['Time'];
 
@@ -674,8 +677,8 @@ function showHighlight(position, point, mouseX, mouseY) {
     const colorBy = document.getElementById('colorBy')?.value || 'gene';
     let tooltipContent = '<div style="font-weight: bold; margin-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.3); padding-bottom: 4px;">Point Information</div>';
     
-    // Add coordinates
-    tooltipContent += `<div style="margin-bottom: 4px;"><strong>Coordinates:</strong><br>(${point.x.toFixed(2)}, ${point.y.toFixed(2)}, ${point.z.toFixed(2)})</div>`;
+    // Add coordinates with selected column names
+    tooltipContent += `<div style="margin-bottom: 4px;"><strong>${selectedCoordX}:</strong> ${point.x.toFixed(2)}, <strong>${selectedCoordY}:</strong> ${point.y.toFixed(2)}, <strong>${selectedCoordZ}:</strong> ${point.z.toFixed(2)}</div>`;
     
     // Add all categorical attributes
     column_names_categorical.forEach(col => {
@@ -981,49 +984,24 @@ async function loadMoreShards(targetShardCount) {
         });
         
         for (const row of newRows) {
-            // Access values by column index (hyparquet returns arrays)
-            const rowX = row[colIdx.x];
-            const rowY = row[colIdx.y];
-            const rowZ = row[colIdx.z];
-            const rowTransformedX = row[colIdx.transformedX];
-            const rowTransformedY = row[colIdx.transformedY];
-            const rowTransformedZ = row[colIdx.transformedZ];
-            const rowXShifted = row[colIdx.X_shifted];
-            const rowTimeRank = row[colIdx.TimeRank];
+            const point = {};
             
-            // Get coordinates based on current coordinate system
-            let x, y, z;
-            if (idx_names[0] === 'X_shifted') {
-                x = rowXShifted ?? 0;
-                y = rowTransformedZ ?? 0;
-                z = rowTimeRank ?? 0;
-            } else if (idx_names[0] === 'transformedX') {
-                x = rowTransformedX ?? 0;
-                y = rowTransformedZ ?? 0;
-                z = rowTransformedY ?? 0;
-            } else {
-                x = rowX ?? 0;
-                y = rowZ ?? 0;
-                z = rowY ?? 0;
+            // Store all raw coordinate column values
+            for (const col of COORD_COLUMN_OPTIONS) {
+                if (colIdx[col] !== undefined) {
+                    point['_raw_' + col] = row[colIdx[col]] ?? 0;
+                }
             }
             
-            const point = { x, y, z };
-            
-            // Store coordinate variants
-            point._originalX = rowX;
-            point._originalY = rowZ;
-            point._originalZ = rowY;
-            point._transformedX = rowTransformedX;
-            point._transformedY = rowTransformedZ;
-            point._transformedZ = rowTransformedY;
-            point._timeRankedX = rowXShifted;
-            point._timeRankedY = rowTransformedZ;
-            point._timeRankedZ = rowTimeRank;
+            // Set display coordinates from selected columns
+            point.x = point['_raw_' + selectedCoordX] ?? 0;
+            point.y = point['_raw_' + selectedCoordY] ?? 0;
+            point.z = point['_raw_' + selectedCoordZ] ?? 0;
             
             // Add loaded columns by index
             for (const col of loadedColumns) {
                 const idx = colIdx[col];
-                if (idx === undefined) continue; // Column not in current request
+                if (idx === undefined) continue;
                 
                 if (col === 'Time') {
                     point[col] = row[idx];
@@ -1122,9 +1100,7 @@ async function loadData() {
         // - Time (continuous attribute)
         const defaultColorBy = column_names_categorical[0]; // 'Structure'
         const essentialColumns = [
-            'x', 'y', 'z',
-            'transformedX', 'transformedY', 'transformedZ',
-            'X_shifted', 'TimeRank',
+            ...COORD_COLUMN_OPTIONS,
             'Time',
             defaultColorBy
         ];
@@ -1162,50 +1138,22 @@ async function loadData() {
             for (let i = startIdx; i < endIdx; i++) {
                 const row = rows[i];
                 
-                // Access values by column index (hyparquet returns arrays)
-                const rowX = row[colIdx.x];
-                const rowY = row[colIdx.y];
-                const rowZ = row[colIdx.z];
-                const rowTransformedX = row[colIdx.transformedX];
-                const rowTransformedY = row[colIdx.transformedY];
-                const rowTransformedZ = row[colIdx.transformedZ];
-                const rowXShifted = row[colIdx.X_shifted];
-                const rowTimeRank = row[colIdx.TimeRank];
-                const rowTime = row[colIdx.Time];
-                const rowDefaultColorBy = row[colIdx[defaultColorBy]];
+                const point = {};
                 
-                // Get coordinates based on current coordinate system
-                let x, y, z;
-                if (idx_names[0] === 'X_shifted') {
-                    x = rowXShifted ?? 0;
-                    y = rowTransformedZ ?? 0;
-                    z = rowTimeRank ?? 0;
-                } else if (idx_names[0] === 'transformedX') {
-                    x = rowTransformedX ?? 0;
-                    y = rowTransformedZ ?? 0;
-                    z = rowTransformedY ?? 0;
-                } else {
-                    x = rowX ?? 0;
-                    y = rowZ ?? 0;
-                    z = rowY ?? 0;
+                // Store all raw coordinate column values for axis switching
+                for (const col of COORD_COLUMN_OPTIONS) {
+                    if (colIdx[col] !== undefined) {
+                        point['_raw_' + col] = row[colIdx[col]] ?? 0;
+                    }
                 }
                 
-                const point = { x, y, z };
-                
-                // Store all coordinate variants for switching without reload
-                point._originalX = rowX;
-                point._originalY = rowZ;
-                point._originalZ = rowY;
-                
-                point._transformedX = rowTransformedX;
-                point._transformedY = rowTransformedZ;
-                point._transformedZ = rowTransformedY;
-                
-                point._timeRankedX = rowXShifted;
-                point._timeRankedY = rowTransformedZ;
-                point._timeRankedZ = rowTimeRank;
+                // Set display coordinates from selected columns
+                point.x = point['_raw_' + selectedCoordX] ?? 0;
+                point.y = point['_raw_' + selectedCoordY] ?? 0;
+                point.z = point['_raw_' + selectedCoordZ] ?? 0;
                 
                 // Add the default colorBy attribute (already loaded)
+                const rowDefaultColorBy = row[colIdx[defaultColorBy]];
                 point[defaultColorBy] = rowDefaultColorBy != null ? String(rowDefaultColorBy) : '';
                 if (rowDefaultColorBy) {
                     if (!attributeValues[defaultColorBy]) attributeValues[defaultColorBy] = new Set();
@@ -1213,6 +1161,7 @@ async function loadData() {
                 }
                 
                 // Add Time (continuous attribute)
+                const rowTime = row[colIdx.Time];
                 point.Time = rowTime;
                 if (rowTime != null) {
                     if (!continuousRanges.Time) continuousRanges.Time = { min: Infinity, max: -Infinity };
@@ -1261,9 +1210,9 @@ async function loadData() {
             }
             
             console.log(`Coordinate ranges (sampled from first ${Math.min(10000, allData.length)} points):`);
-            console.log(`  ${idx_names[0]}: [${xMin.toFixed(2)}, ${xMax.toFixed(2)}] (span: ${(xMax - xMin).toFixed(2)})`);
-            console.log(`  ${idx_names[1]}: [${yMin.toFixed(2)}, ${yMax.toFixed(2)}] (span: ${(yMax - yMin).toFixed(2)})`);
-            console.log(`  ${idx_names[2]}: [${zMin.toFixed(2)}, ${zMax.toFixed(2)}] (span: ${(zMax - zMin).toFixed(2)})`);
+            console.log(`  ${selectedCoordX}: [${xMin.toFixed(2)}, ${xMax.toFixed(2)}] (span: ${(xMax - xMin).toFixed(2)})`);
+            console.log(`  ${selectedCoordY}: [${yMin.toFixed(2)}, ${yMax.toFixed(2)}] (span: ${(yMax - yMin).toFixed(2)})`);
+            console.log(`  ${selectedCoordZ}: [${zMin.toFixed(2)}, ${zMax.toFixed(2)}] (span: ${(zMax - zMin).toFixed(2)})`);
         }
         
         // Initialize visible indices
@@ -1271,6 +1220,9 @@ async function loadData() {
         for (let i = 0; i < allData.length; i++) {
             visibleIndices[i] = i;
         }
+        
+        // Populate coordinate axis dropdowns
+        populateCoordDropdowns();
         
         // Populate colorBy dropdown
         const colorBySelect = document.getElementById('colorBy');
@@ -2131,110 +2083,67 @@ function updateFilter() {
     // Legend updates automatically when point cloud is recreated
 }
 
-// Remap coordinates from stored data without reloading files
+// Populate the coordinate axis dropdowns
+function populateCoordDropdowns() {
+    const xSelect = document.getElementById('coordX');
+    const ySelect = document.getElementById('coordY');
+    const zSelect = document.getElementById('coordZ');
+    if (!xSelect || !ySelect || !zSelect) return;
+
+    [xSelect, ySelect, zSelect].forEach((sel, axisIdx) => {
+        sel.innerHTML = '';
+        const defaultVal = [selectedCoordX, selectedCoordY, selectedCoordZ][axisIdx];
+        COORD_COLUMN_OPTIONS.forEach(col => {
+            const opt = document.createElement('option');
+            opt.value = col;
+            opt.textContent = col;
+            if (col === defaultVal) opt.selected = true;
+            sel.appendChild(opt);
+        });
+    });
+}
+
+// Remap coordinates from stored raw column values
 function remapCoordinates() {
-    console.log(`[Coordinates] Remapping coordinates to: ${idx_names.join(', ')}`);
-    
-    let remappedCount = 0;
-    let skippedCount = 0;
-    
+    console.log(`[Coordinates] Remapping to X=${selectedCoordX}, Y=${selectedCoordY}, Z=${selectedCoordZ}`);
+
     for (let i = 0; i < allData.length; i++) {
         const point = allData[i];
-        let newX, newY, newZ;
-        
-        if (idx_names[0] === 'transformedX' && idx_names[1] === 'transformedZ' && idx_names[2] === 'transformedY') {
-            // Use transformed coordinates
-            if (point._transformedX !== undefined && point._transformedY !== undefined && point._transformedZ !== undefined) {
-                newX = point._transformedX;
-                newY = point._transformedY;
-                newZ = point._transformedZ;
-                remappedCount++;
-            } else {
-                skippedCount++;
-                continue; // Skip points without transformed coordinates
-            }
-        } else if (idx_names[0] === 'x' && idx_names[1] === 'z' && idx_names[2] === 'y') {
-            // Use original coordinates
-            if (point._originalX !== undefined && point._originalY !== undefined && point._originalZ !== undefined) {
-                newX = point._originalX;
-                newY = point._originalY;
-                newZ = point._originalZ;
-                remappedCount++;
-            } else {
-                skippedCount++;
-                continue; // Skip points without original coordinates
-            }
-        } else if (idx_names[0] === 'X_shifted' && idx_names[1] === 'transformedZ' && idx_names[2] === 'TimeRank') {
-            // Use Time Ranked coordinates
-            if (point._timeRankedX !== undefined && point._timeRankedY !== undefined && point._timeRankedZ !== undefined) {
-                newX = point._timeRankedX;
-                newY = point._timeRankedY;
-                newZ = point._timeRankedZ;
-                remappedCount++;
-            } else {
-                skippedCount++;
-                continue; // Skip points without Time Ranked coordinates
-            }
-        } else {
-            console.warn(`[Coordinates] Unknown coordinate system: ${idx_names.join(', ')}`);
-            continue;
-        }
-        
-        // Update coordinates
-        point.x = newX;
-        point.y = newY;
-        point.z = newZ;
+        point.x = point['_raw_' + selectedCoordX] ?? 0;
+        point.y = point['_raw_' + selectedCoordY] ?? 0;
+        point.z = point['_raw_' + selectedCoordZ] ?? 0;
     }
-    
-    console.log(`[Coordinates] Remapped ${remappedCount} points, skipped ${skippedCount} points without stored coordinates`);
-    
-    // Reset camera initialization
+
     cameraInitialized = false;
-    
-    // Clear filters
+
     activeFilters = [];
     renderFilters();
-    
-    // Clear color map to regenerate colors
+
     colorMap.clear();
-    
-    // Recreate point cloud with new coordinates
+
     if (visibleIndices && visibleIndices.length > 0) {
-        // Reset visible indices to show all points
         visibleIndices = new Uint32Array(allData.length);
         for (let i = 0; i < allData.length; i++) {
             visibleIndices[i] = i;
         }
         createPointCloud();
     }
-    
-    // Update legend
+
     updateLegend();
 }
 
 // Setup event listeners
 function setupEventListeners() {
-    // Coordinate system change
-    document.getElementById('coordinateSystem').addEventListener('change', (e) => {
-        const selectedSystem = e.target.value;
-        console.log(`[Coordinates] Changing to: ${selectedSystem}`);
-        
-        // Update idx_names based on selection
-        if (selectedSystem === 'transformed') {
-            idx_names = ['transformedX', 'transformedZ', 'transformedY'];
-        } else if (selectedSystem === 'original') {
-            idx_names = ['x', 'z', 'y'];
-        } else if (selectedSystem === 'timeRanked') {
-            idx_names = ['X_shifted', 'transformedZ', 'TimeRank'];
-        } else {
-            idx_names = ['X_shifted', 'transformedZ', 'TimeRank'];
-        }
-        
-        console.log(`[Coordinates] Using coordinate columns: ${idx_names.join(', ')}`);
-        
-        // Remap coordinates without reloading files
+    // Coordinate axis change handlers
+    function handleCoordChange() {
+        selectedCoordX = document.getElementById('coordX').value;
+        selectedCoordY = document.getElementById('coordY').value;
+        selectedCoordZ = document.getElementById('coordZ').value;
         remapCoordinates();
-    });
+    }
+    document.getElementById('coordX').addEventListener('change', handleCoordChange);
+    document.getElementById('coordY').addEventListener('change', handleCoordChange);
+    document.getElementById('coordZ').addEventListener('change', handleCoordChange);
     
     // Randomize colors button
     const randomizeButton = document.getElementById('randomizeColors');
