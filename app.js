@@ -42,6 +42,11 @@ let activeFilters = []; // Array of filter objects: { attribute, type: 'categori
 let initialCameraState = { position: null, target: null }; // Store initial camera state for reset
 let renderedIndicesMap = null; // Map from instance index to data index for hover detection
 let autoRotateEnabled = false; // Auto-rotation state
+let autoShiftEnabled = false; // Auto-shift (TimeRank animation) state
+let autoShiftIntervalId = null; // setInterval handle
+let autoShiftTimeRankValues = []; // Sorted unique TimeRank values
+let autoShiftCurrentIndex = 0; // Current position in the TimeRank sequence
+const AUTO_SHIFT_INTERVAL_MS = 500; // ms between TimeRank steps
 let highlightSphere = null; // Sphere to highlight hovered point
 let tooltip = null; // Tooltip element
 let isShiftPressed = false; // Track SHIFT key state
@@ -2016,24 +2021,13 @@ function throttleFilterUpdate() {
 function updateFilter() {
     console.log('[Filter] Updating filters, active filters:', activeFilters.length);
     
-    // If no active filters, show all points
-    if (activeFilters.length === 0) {
-        visibleIndices = new Uint32Array(allData.length);
-        for (let i = 0; i < allData.length; i++) {
-            visibleIndices[i] = i;
-        }
-        console.log(`[Filter] No filters active - showing all ${visibleIndices.length} points`);
-        createPointCloud();
-        return;
-    }
-    
     // Start with all indices
     let candidateIndices = [];
     for (let i = 0; i < allData.length; i++) {
         candidateIndices.push(i);
     }
     
-    // Apply each filter sequentially (AND logic)
+    // Apply each user filter sequentially (AND logic)
     activeFilters.forEach((filter, index) => {
         if (!filter.attribute || !filter.type) {
             console.log(`[Filter] Skipping filter ${index + 1} (no attribute or type)`);
@@ -2079,8 +2073,86 @@ function updateFilter() {
     
     console.log(`[Filter] Final visible points: ${visibleIndices.length} out of ${allData.length} total`);
     
+    // Apply auto-shift TimeRank filter on top of user filters
+    if (autoShiftEnabled && autoShiftTimeRankValues.length > 0) {
+        const targetRank = autoShiftTimeRankValues[autoShiftCurrentIndex];
+        const shifted = [];
+        for (let i = 0; i < visibleIndices.length; i++) {
+            const point = allData[visibleIndices[i]];
+            if (point._raw_TimeRank === targetRank) {
+                shifted.push(visibleIndices[i]);
+            }
+        }
+        visibleIndices = new Uint32Array(shifted);
+    }
+
     createPointCloud();
-    // Legend updates automatically when point cloud is recreated
+}
+
+// Build sorted unique TimeRank values from current data
+function buildTimeRankValues() {
+    const seen = new Set();
+    for (let i = 0; i < allData.length; i++) {
+        const v = allData[i]._raw_TimeRank;
+        if (v !== undefined && v !== null) seen.add(v);
+    }
+    autoShiftTimeRankValues = Array.from(seen).sort((a, b) => a - b);
+    console.log(`[AutoShift] Found ${autoShiftTimeRankValues.length} unique TimeRank values`);
+}
+
+// Advance to the next TimeRank and re-filter
+function autoShiftTick() {
+    if (!autoShiftEnabled || autoShiftTimeRankValues.length === 0) return;
+
+    autoShiftCurrentIndex = (autoShiftCurrentIndex + 1) % autoShiftTimeRankValues.length;
+
+    const statusEl = document.getElementById('autoShiftStatus');
+    if (statusEl) {
+        statusEl.textContent = `TimeRank: ${autoShiftTimeRankValues[autoShiftCurrentIndex]} (${autoShiftCurrentIndex + 1}/${autoShiftTimeRankValues.length})`;
+    }
+
+    updateFilter();
+}
+
+// Start the auto-shift animation
+function startAutoShift() {
+    buildTimeRankValues();
+    if (autoShiftTimeRankValues.length === 0) {
+        console.warn('[AutoShift] No TimeRank values found');
+        return;
+    }
+    autoShiftCurrentIndex = 0;
+    autoShiftEnabled = true;
+
+    const statusEl = document.getElementById('autoShiftStatus');
+    if (statusEl) {
+        statusEl.style.display = 'inline';
+        statusEl.textContent = `TimeRank: ${autoShiftTimeRankValues[0]} (1/${autoShiftTimeRankValues.length})`;
+    }
+
+    // Show the first frame immediately
+    updateFilter();
+
+    autoShiftIntervalId = setInterval(autoShiftTick, AUTO_SHIFT_INTERVAL_MS);
+    console.log('[AutoShift] Started');
+}
+
+// Stop the auto-shift animation and restore full view
+function stopAutoShift() {
+    autoShiftEnabled = false;
+    if (autoShiftIntervalId !== null) {
+        clearInterval(autoShiftIntervalId);
+        autoShiftIntervalId = null;
+    }
+
+    const statusEl = document.getElementById('autoShiftStatus');
+    if (statusEl) {
+        statusEl.style.display = 'none';
+    }
+
+    // Re-run filter without the TimeRank constraint to restore full view
+    updateFilter();
+    console.log('[AutoShift] Stopped');
 }
 
 // Populate the coordinate axis dropdowns
@@ -2116,18 +2188,10 @@ function remapCoordinates() {
 
     cameraInitialized = false;
 
-    activeFilters = [];
-    renderFilters();
-
     colorMap.clear();
 
-    if (visibleIndices && visibleIndices.length > 0) {
-        visibleIndices = new Uint32Array(allData.length);
-        for (let i = 0; i < allData.length; i++) {
-            visibleIndices[i] = i;
-        }
-        createPointCloud();
-    }
+    // Re-apply existing filters with the new coordinates
+    updateFilter();
 
     updateLegend();
 }
@@ -2252,6 +2316,15 @@ function setupEventListeners() {
     document.getElementById('autoRotate').addEventListener('change', (e) => {
         autoRotateEnabled = e.target.checked;
         console.log('[Camera] Auto-rotate:', autoRotateEnabled ? 'enabled' : 'disabled');
+    });
+
+    // Auto-shift checkbox
+    document.getElementById('autoShift').addEventListener('change', (e) => {
+        if (e.target.checked) {
+            startAutoShift();
+        } else {
+            stopAutoShift();
+        }
     });
 }
 
