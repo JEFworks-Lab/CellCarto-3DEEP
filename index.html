@@ -107,9 +107,12 @@
                 <div class="control-group">
                     <label class="checkbox-label">
                         <input type="checkbox" id="autoShift">
-                        Auto-shift (animate TimeRank)
+                        Auto-shift
                     </label>
-                    <span id="autoShiftStatus" style="font-size: 0.85em; color: #95a5a6; display: none;"></span>
+                    <div id="autoShiftSliderContainer" style="display: none; margin-top: 4px;">
+                        <input type="range" id="autoShiftSlider" min="0" max="0" step="1" value="0" style="width: 100%;">
+                        <span id="autoShiftStatus" style="font-size: 0.85em; color: #95a5a6;"></span>
+                    </div>
                 </div>
             </div>
         </div>

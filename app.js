@@ -2100,17 +2100,22 @@ function buildTimeRankValues() {
     console.log(`[AutoShift] Found ${autoShiftTimeRankValues.length} unique TimeRank values`);
 }
 
+// Update the auto-shift slider and label to reflect the current index
+function syncAutoShiftUI() {
+    const slider = document.getElementById('autoShiftSlider');
+    const statusEl = document.getElementById('autoShiftStatus');
+    if (slider) slider.value = autoShiftCurrentIndex;
+    if (statusEl) {
+        statusEl.textContent = `TimeRank: ${autoShiftTimeRankValues[autoShiftCurrentIndex]} (${autoShiftCurrentIndex + 1}/${autoShiftTimeRankValues.length})`;
+    }
+}
+
 // Advance to the next TimeRank and re-filter
 function autoShiftTick() {
     if (!autoShiftEnabled || autoShiftTimeRankValues.length === 0) return;
 
     autoShiftCurrentIndex = (autoShiftCurrentIndex + 1) % autoShiftTimeRankValues.length;
-
-    const statusEl = document.getElementById('autoShiftStatus');
-    if (statusEl) {
-        statusEl.textContent = `TimeRank: ${autoShiftTimeRankValues[autoShiftCurrentIndex]} (${autoShiftCurrentIndex + 1}/${autoShiftTimeRankValues.length})`;
-    }
-
+    syncAutoShiftUI();
     updateFilter();
 }
 
@@ -2124,13 +2129,17 @@ function startAutoShift() {
     autoShiftCurrentIndex = 0;
     autoShiftEnabled = true;
 
-    const statusEl = document.getElementById('autoShiftStatus');
-    if (statusEl) {
-        statusEl.style.display = 'inline';
-        statusEl.textContent = `TimeRank: ${autoShiftTimeRankValues[0]} (1/${autoShiftTimeRankValues.length})`;
+    // Configure and show the slider
+    const container = document.getElementById('autoShiftSliderContainer');
+    const slider = document.getElementById('autoShiftSlider');
+    if (container) container.style.display = 'block';
+    if (slider) {
+        slider.min = 0;
+        slider.max = autoShiftTimeRankValues.length - 1;
+        slider.value = 0;
     }
+    syncAutoShiftUI();
 
-    // Show the first frame immediately
     updateFilter();
 
     autoShiftIntervalId = setInterval(autoShiftTick, AUTO_SHIFT_INTERVAL_MS);
@@ -2145,12 +2154,9 @@ function stopAutoShift() {
         autoShiftIntervalId = null;
     }
 
-    const statusEl = document.getElementById('autoShiftStatus');
-    if (statusEl) {
-        statusEl.style.display = 'none';
-    }
+    const container = document.getElementById('autoShiftSliderContainer');
+    if (container) container.style.display = 'none';
 
-    // Re-run filter without the TimeRank constraint to restore full view
     updateFilter();
     console.log('[AutoShift] Stopped');
 }
@@ -2324,6 +2330,30 @@ function setupEventListeners() {
             startAutoShift();
         } else {
             stopAutoShift();
+        }
+    });
+
+    // Auto-shift slider – lets the user scrub to a specific TimeRank
+    document.getElementById('autoShiftSlider').addEventListener('input', (e) => {
+        const idx = parseInt(e.target.value);
+        if (isNaN(idx) || idx < 0 || idx >= autoShiftTimeRankValues.length) return;
+
+        autoShiftCurrentIndex = idx;
+        syncAutoShiftUI();
+
+        // Pause the animation while the user is dragging
+        if (autoShiftIntervalId !== null) {
+            clearInterval(autoShiftIntervalId);
+            autoShiftIntervalId = null;
+        }
+
+        updateFilter();
+    });
+
+    // Resume animation when the user releases the slider
+    document.getElementById('autoShiftSlider').addEventListener('change', () => {
+        if (autoShiftEnabled && autoShiftIntervalId === null) {
+            autoShiftIntervalId = setInterval(autoShiftTick, AUTO_SHIFT_INTERVAL_MS);
         }
     });
 }
