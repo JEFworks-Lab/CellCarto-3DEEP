@@ -20,39 +20,51 @@ const PARQUET_SHARDS = [
 
 // Configuration
 const MAX_POINTS = 8000000; // Max points to render for performance (reduced from 2M)
+const KO_TRANSFORMED_Y_OFFSET = 1000; // Shift KO follicles up in the transformed coordinate space so they share the same camera view as WT
+const DEFAULT_TIMERANK = 260; // Initial TimeRank shown in slider/filter on load
     
 // Column configuration - users can manually change these lists
+const COORD_PRESETS = {
+    transformed: { x: 'transformedX', y: 'transformedZ', z: 'transformedY' },
+    raw:         { x: 'x',            y: 'z',            z: 'y' }
+};
 const COORD_COLUMN_OPTIONS = ['x', 'y', 'z', 'transformedX', 'transformedY', 'transformedZ', 'Adj_transformedZ', 'X_shifted', 'TimeRank'];
-let selectedCoordX = 'transformedX';
-let selectedCoordY = 'transformedZ';
-let selectedCoordZ = 'transformedY';
+let selectedCoordX = COORD_PRESETS.transformed.x;
+let selectedCoordY = COORD_PRESETS.transformed.y;
+let selectedCoordZ = COORD_PRESETS.transformed.z;
 const column_names_categorical = ['Structure', 'HF', 'Sample', 'Group', 'CellType', 'Gene'];
+const UI_CATEGORICAL_OPTIONS = ['Structure', 'CellType', 'Gene'];
 const column_names_continuous = ['Time'];
 
+function getAttributeDisplayName(attribute) {
+    return attribute === 'CellType' ? 'Cell-Type' : attribute;
+}
+
 // Global variables
-let scene, camera, renderer, controls;
-let points, pointCloud;
 let allData = [];
 let visibleIndices = null; // Will be Uint32Array
 let colorMap = new Map();
 let attributeValues = {}; // Will be dynamically populated
 let continuousRanges = {}; // Will store min/max for each continuous variable
 let cameraInitialized = false;
-let activeFilters = []; // Array of filter objects: { attribute, type: 'categorical'|'time', values/range }
-let initialCameraState = { position: null, target: null }; // Store initial camera state for reset
-let renderedIndicesMap = null; // Map from instance index to data index for hover detection
-let autoRotateEnabled = false; // Auto-rotation state
-let autoShiftEnabled = false; // Auto-shift (TimeRank animation) state
-let autoShiftIntervalId = null; // setInterval handle
-let autoShiftTimeRankValues = []; // Sorted unique TimeRank values
-let autoShiftCurrentIndex = 0; // Current position in the TimeRank sequence
-const AUTO_SHIFT_INTERVAL_MS = 500; // ms between TimeRank steps
-let highlightSphere = null; // Sphere to highlight hovered point
-let tooltip = null; // Tooltip element
-let isShiftPressed = false; // Track SHIFT key state
-let raycaster = new THREE.Raycaster(); // For point picking
-let mouse = new THREE.Vector2(); // Mouse position for raycasting
-let eventListenersInitialized = false; // Track if event listeners have been set up
+let activeFilters = [];
+let initialCameraState = { position: null, target: null };
+let autoRotateEnabled = false;
+let autoShiftEnabled = false;
+let autoShiftIntervalId = null;
+let autoShiftTimeRankValues = [];
+let autoShiftCurrentIndex = 0;
+const AUTO_SHIFT_INTERVAL_MS = 500;
+let timerankFilterActive = true;
+let tooltip = null;
+let isShiftPressed = false;
+let eventListenersInitialized = false;
+
+// Dual-viewport state: WT (top) and KO (bottom)
+const viewports = {
+    wt: { scene: null, camera: null, renderer: null, controls: null, pointCloud: null, renderedIndicesMap: null, highlightSphere: null, raycaster: new THREE.Raycaster(), mouse: new THREE.Vector2() },
+    ko: { scene: null, camera: null, renderer: null, controls: null, pointCloud: null, renderedIndicesMap: null, highlightSphere: null, raycaster: new THREE.Raycaster(), mouse: new THREE.Vector2() }
+};
 let currentTheme = 'dark';
 
 const THEME_STORAGE_KEY = 'kidney-cellcarto-theme';
@@ -62,11 +74,12 @@ const SCENE_THEME_COLORS = {
 };
 
 function updateSceneTheme(theme) {
-    if (!scene) {
-        return;
-    }
     const color = SCENE_THEME_COLORS[theme] ?? SCENE_THEME_COLORS.dark;
-    scene.background = new THREE.Color(color);
+    for (const key of ['wt', 'ko']) {
+        if (viewports[key].scene) {
+            viewports[key].scene.background = new THREE.Color(color);
+        }
+    }
 }
 
 function applyTheme(theme) {
@@ -114,535 +127,189 @@ let isLoadingColumn = false; // Prevent concurrent column loads
 let loadedShardCount = 0; // How many shards are currently loaded
 let isLoadingShards = false; // Prevent concurrent shard loads
 
-// Initialize Three.js scene
-function initScene() {
-    const container = document.getElementById('center-panel');
-    const canvas = document.getElementById('scene');
-    
-    // Scene
-    scene = new THREE.Scene();
+// Helper: set up a single viewport (scene, camera, renderer, controls, highlight sphere)
+function initViewport(key, canvasId, containerId) {
+    const vp = viewports[key];
+    const container = document.getElementById(containerId);
+    const canvas = document.getElementById(canvasId);
+
+    vp.scene = new THREE.Scene();
     updateSceneTheme(currentTheme);
-    
-    // Camera
-    const width = container.clientWidth;
-    const height = container.clientHeight;
-    camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 10000);
-    camera.position.set(0, 0, 100);
-    
-    // Renderer
-    renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
-    renderer.setSize(width, height);
-    renderer.setPixelRatio(window.devicePixelRatio);
-    
-    // Controls
-    controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.05;
-    controls.minDistance = 1;
-    controls.maxDistance = 10000;
-    // Completely disable OrbitControls pan and rotate - we'll handle it custom
-    controls.enableRotate = false;
-    controls.enablePan = false; // We'll handle panning manually
-    controls.enableZoom = true; // Enable zooming (mouse wheel)
-    controls.zoomSpeed = 3.0; // Faster zoom (default is 1.0)
-    controls.screenSpacePanning = false;
-    controls.panSpeed = 1.0; // Pan speed reference
-    
-    // Disable OrbitControls mouse/touch handlers by overriding them
-    controls.mouseButtons = {
-        LEFT: null,  // Disable left mouse button
-        MIDDLE: null, // Disable middle mouse button
-        RIGHT: null  // Disable right mouse button
-    };
-    
-    // Disable touch controls
-    controls.touches = {
-        ONE: null,
-        TWO: null
-    };
-    
-    // Track Control key state and mouse state
+
+    const width = container.clientWidth || 400;
+    const height = container.clientHeight || 300;
+    vp.camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 10000);
+    vp.camera.position.set(0, 0, 100);
+
+    vp.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    vp.renderer.setSize(width, height);
+    vp.renderer.setPixelRatio(window.devicePixelRatio);
+
+    vp.controls = new OrbitControls(vp.camera, vp.renderer.domElement);
+    vp.controls.enableDamping = true;
+    vp.controls.dampingFactor = 0.05;
+    vp.controls.minDistance = 1;
+    vp.controls.maxDistance = 10000;
+    vp.controls.enableRotate = false;
+    vp.controls.enablePan = false;
+    vp.controls.enableZoom = false;
+    vp.controls.screenSpacePanning = false;
+    vp.controls.mouseButtons = { LEFT: null, MIDDLE: null, RIGHT: null };
+    vp.controls.touches = { ONE: null, TWO: null };
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    vp.scene.add(ambientLight);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.4);
+    directionalLight.position.set(1, 1, 1);
+    vp.scene.add(directionalLight);
+
+    const highlightGeometry = new THREE.SphereGeometry(1, 16, 16);
+    const highlightMaterial = new THREE.MeshBasicMaterial({
+        color: 0xffffff, wireframe: true, side: THREE.DoubleSide,
+        depthTest: true, depthWrite: false
+    });
+    vp.highlightSphere = new THREE.Mesh(highlightGeometry, highlightMaterial);
+    vp.highlightSphere.renderOrder = 1000;
+    vp.highlightSphere.visible = false;
+    vp.scene.add(vp.highlightSphere);
+
+    return vp;
+}
+
+// Initialize Two Three.js viewports (WT top, KO bottom)
+function initScene() {
+    initViewport('wt', 'scene-wt', 'viewport-wt');
+    initViewport('ko', 'scene-ko', 'viewport-ko');
+
+    // Shared drag / pan / rotate state across both viewports
     let isControlPressed = false;
     let isDragging = false;
     let lastMousePosition = new THREE.Vector2();
-    const panSpeed = 0.1; // Pan speed multiplier (increased for better responsiveness)
-    const rotationSpeed = 0.01; // Rotation speed (increased for better responsiveness)
-    
-    // Listen for Control key
+    const panSpeed = 0.1;
+    const rotationSpeed = 0.01;
+
     window.addEventListener('keydown', (event) => {
-        if (event.key === 'Control' || event.ctrlKey) {
-            if (!isControlPressed) {
-                isControlPressed = true;
-                console.log('[Camera Controls] Control key pressed - rotation mode enabled');
-            }
-        }
+        if (event.key === 'Control' || event.ctrlKey) isControlPressed = true;
     });
-    
     window.addEventListener('keyup', (event) => {
-        if (event.key === 'Control' || !event.ctrlKey) {
-            if (isControlPressed) {
-                isControlPressed = false;
-                console.log('[Camera Controls] Control key released - pan mode enabled');
-            }
-        }
+        if (event.key === 'Control' || !event.ctrlKey) isControlPressed = false;
     });
-    
-    // Custom mouse handling for panning and rotation
-    const canvasElement = renderer.domElement;
-    
-    if (!canvasElement) {
-        console.error('[Camera Controls] ERROR: Canvas element not found!');
-        return;
+
+    // Apply a camera delta to both viewports simultaneously
+    function applyDelta(deltaX, deltaY) {
+        for (const key of ['wt', 'ko']) {
+            const vp = viewports[key];
+            if (isControlPressed) {
+                const offset = new THREE.Vector3().subVectors(vp.camera.position, vp.controls.target);
+                if (Math.abs(deltaY) > 0) {
+                    const m = new THREE.Matrix4().makeRotationAxis(new THREE.Vector3(1, 0, 0), deltaY * rotationSpeed);
+                    offset.applyMatrix4(m);
+                }
+                if (Math.abs(deltaX) > 0) {
+                    const m = new THREE.Matrix4().makeRotationAxis(new THREE.Vector3(0, 1, 0), deltaX * rotationSpeed);
+                    offset.applyMatrix4(m);
+                }
+                vp.camera.position.copy(vp.controls.target).add(offset);
+                vp.camera.lookAt(vp.controls.target);
+            } else {
+                const dist = vp.camera.position.distanceTo(vp.controls.target);
+                const sp = panSpeed * (dist * 0.01);
+                if (Math.abs(deltaY) > 0) {
+                    const v = new THREE.Vector3(0, deltaY * sp, 0);
+                    vp.controls.target.add(v);
+                    vp.camera.position.add(v);
+                }
+                if (Math.abs(deltaX) > 0) {
+                    const v = new THREE.Vector3(-deltaX * sp, 0, 0);
+                    vp.controls.target.add(v);
+                    vp.camera.position.add(v);
+                }
+            }
+            vp.controls.update();
+            vp.camera.updateMatrixWorld();
+        }
     }
-    
-    console.log('[Camera Controls] Setting up event listeners on canvas:', {
-        canvasElement: canvasElement,
-        canvasId: canvasElement.id,
-        canvasTag: canvasElement.tagName,
-        canvasClasses: canvasElement.className,
-        parentElement: canvasElement.parentElement?.id || 'none'
-    });
-    
-    // Use pointer events (better for Mac trackpads) and mouse events as fallback
+
+    // Attach drag handlers to the whole center panel so either viewport triggers pan/rotate
+    const centerPanel = document.getElementById('center-panel');
+
     const handlePointerDown = (event) => {
-        // Only handle if clicking on canvas or its children
-        const target = event.target;
-        if (!canvasElement.contains(target) && target !== canvasElement) {
-            return;
-        }
-        
-        console.log('[Camera Controls] pointerdown/mousedown event:', {
-            type: event.type,
-            pointerId: event.pointerId,
-            button: event.button,
-            buttons: event.buttons,
-            clientX: event.clientX,
-            clientY: event.clientY,
-            isControlPressed: isControlPressed,
-            ctrlKey: event.ctrlKey,
-            metaKey: event.metaKey,
-            target: target?.tagName,
-            targetId: target?.id
-        });
-        
-        // Accept any pointer/mouse down on the canvas (Mac trackpads work with pointer events)
-        if (event.button === 0 || event.button === 2 || event.buttons > 0 || event.pointerType === 'mouse' || event.pointerType === 'touch') {
+        if (event.target.tagName !== 'CANVAS') return;
+        if (event.button === 0 || event.button === 2 || event.buttons > 0) {
             event.preventDefault();
-            event.stopPropagation();
-            event.stopImmediatePropagation();
             isDragging = true;
             lastMousePosition.set(event.clientX, event.clientY);
-            console.log('[Camera Controls] Dragging started, mode:', isControlPressed ? 'ROTATE' : 'PAN');
         }
     };
-    
-    // Add both pointer and mouse events for maximum compatibility
-    canvasElement.addEventListener('pointerdown', handlePointerDown, { capture: true, passive: false });
-    canvasElement.addEventListener('mousedown', handlePointerDown, { capture: true, passive: false });
-    
-    // Also try on document as fallback
-    document.addEventListener('pointerdown', (event) => {
-        if (canvasElement.contains(event.target) || event.target === canvasElement) {
-            handlePointerDown(event);
-        }
-    }, { capture: true, passive: false });
-    
-    document.addEventListener('mousedown', (event) => {
-        if (canvasElement.contains(event.target) || event.target === canvasElement) {
-            handlePointerDown(event);
-        }
-    }, { capture: true, passive: false });
-    
-    // Also handle touch events for Mac trackpads
-    canvasElement.addEventListener('touchstart', (event) => {
-        console.log('[Camera Controls] touchstart event:', {
-            touches: event.touches.length,
-            clientX: event.touches[0]?.clientX,
-            clientY: event.touches[0]?.clientY,
-            isControlPressed: isControlPressed
-        });
-        
-        if (event.touches.length === 1) { // Single finger touch
-            event.preventDefault();
-            event.stopPropagation();
-            event.stopImmediatePropagation();
-            isDragging = true;
-            lastMousePosition.set(event.touches[0].clientX, event.touches[0].clientY);
-            console.log('[Camera Controls] Touch dragging started, mode:', isControlPressed ? 'ROTATE' : 'PAN');
-        }
-    }, { capture: true, passive: false });
-    
+    centerPanel.addEventListener('pointerdown', handlePointerDown, { capture: true, passive: false });
+
     const handlePointerMove = (event) => {
-        if (isDragging) {
-            event.preventDefault();
-            event.stopPropagation();
-            event.stopImmediatePropagation();
-            const deltaX = event.clientX - lastMousePosition.x;
-            const deltaY = event.clientY - lastMousePosition.y;
-            
-            console.log('[Camera Controls] mousemove while dragging:', {
-                deltaX: deltaX.toFixed(2),
-                deltaY: deltaY.toFixed(2),
-                isControlPressed: isControlPressed,
-                mode: isControlPressed ? 'ROTATE' : 'PAN'
-            });
-            
-            if (isControlPressed) {
-                // Control + drag: Rotate camera
-                // Up/down: rotate around x-axis (pitch) to view z variation
-                // Left/right: rotate around y-axis (yaw)
-                
-                console.log('[Camera Controls] ROTATING - Control held');
-                
-                // Get camera's current position relative to target
-                const offset = new THREE.Vector3();
-                offset.subVectors(camera.position, controls.target);
-                
-                const beforePos = camera.position.clone();
-                
-                // Apply rotations
-                if (Math.abs(deltaY) > 0) {
-                    // Rotate around world x-axis (pitch) - tilt to see z variation
-                    const pitchAngle = deltaY * rotationSpeed;
-                    console.log('[Camera Controls] Rotating around X-axis (pitch):', pitchAngle.toFixed(4));
-                    const xAxis = new THREE.Vector3(1, 0, 0);
-                    const rotationMatrixX = new THREE.Matrix4();
-                    rotationMatrixX.makeRotationAxis(xAxis, pitchAngle);
-                    offset.applyMatrix4(rotationMatrixX);
-                }
-                
-                if (Math.abs(deltaX) > 0) {
-                    // Rotate around world y-axis (yaw)
-                    const yawAngle = deltaX * rotationSpeed;
-                    console.log('[Camera Controls] Rotating around Y-axis (yaw):', yawAngle.toFixed(4));
-                    const yAxis = new THREE.Vector3(0, 1, 0);
-                    const rotationMatrixY = new THREE.Matrix4();
-                    rotationMatrixY.makeRotationAxis(yAxis, yawAngle);
-                    offset.applyMatrix4(rotationMatrixY);
-                }
-                
-                // Update camera position
-                camera.position.copy(controls.target).add(offset);
-                
-                // Update camera to look at target
-                camera.lookAt(controls.target);
-                
-                console.log('[Camera Controls] Camera position updated:', {
-                    before: `(${beforePos.x.toFixed(2)}, ${beforePos.y.toFixed(2)}, ${beforePos.z.toFixed(2)})`,
-                    after: `(${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)})`
-                });
-            } else {
-                // Default drag: Pan camera in x-y plane
-                // Up/down: pan in y direction (world space)
-                // Left/right: pan in x direction (world space)
-                
-                console.log('[Camera Controls] PANNING - No Control key');
-                
-                // Scale pan speed by camera distance for more natural feel
-                const cameraDistance = camera.position.distanceTo(controls.target);
-                const scaledPanSpeed = panSpeed * (cameraDistance * 0.01);
-                
-                const beforeTarget = controls.target.clone();
-                const beforePos = camera.position.clone();
-                
-                if (Math.abs(deltaY) > 0) {
-                    // Pan in y direction (world space)
-                    // Positive for Google Maps-like "grab and drag" behavior (screen Y is inverted from world Y)
-                    const yPanAmount = deltaY * scaledPanSpeed;
-                    console.log('[Camera Controls] Panning in Y direction:', yPanAmount.toFixed(4));
-                    const yPanVector = new THREE.Vector3(0, yPanAmount, 0);
-                    controls.target.add(yPanVector);
-                    camera.position.add(yPanVector);
-                }
-                
-                if (Math.abs(deltaX) > 0) {
-                    // Pan in x direction (world space)
-                    // Negate for Google Maps-like "grab and drag" behavior
-                    const xPanAmount = -deltaX * scaledPanSpeed;
-                    console.log('[Camera Controls] Panning in X direction:', xPanAmount.toFixed(4));
-                    const xPanVector = new THREE.Vector3(xPanAmount, 0, 0);
-                    controls.target.add(xPanVector);
-                    camera.position.add(xPanVector);
-                }
-                
-                console.log('[Camera Controls] Target updated:', {
-                    before: `(${beforeTarget.x.toFixed(2)}, ${beforeTarget.y.toFixed(2)}, ${beforeTarget.z.toFixed(2)})`,
-                    after: `(${controls.target.x.toFixed(2)}, ${controls.target.y.toFixed(2)}, ${controls.target.z.toFixed(2)})`
-                });
-            }
-            
-            controls.update();
-            camera.updateMatrixWorld();
-            lastMousePosition.set(event.clientX, event.clientY);
-        }
-    };
-    
-    // Add both pointer and mouse events
-    canvasElement.addEventListener('pointermove', handlePointerMove, { capture: true, passive: false });
-    canvasElement.addEventListener('mousemove', handlePointerMove, { capture: true, passive: false });
-    
-    // Also on document as fallback
-    document.addEventListener('pointermove', (event) => {
-        if (isDragging) {
-            handlePointerMove(event);
-        }
-    }, { capture: true, passive: false });
-    
-    document.addEventListener('mousemove', (event) => {
-        if (isDragging) {
-            handlePointerMove(event);
-        }
-    }, { capture: true, passive: false });
-    
-    // Handle touchmove for Mac trackpads
-    canvasElement.addEventListener('touchmove', (event) => {
-        if (isDragging && event.touches.length === 1) {
-            event.preventDefault();
-            event.stopPropagation();
-            event.stopImmediatePropagation();
-            const deltaX = event.touches[0].clientX - lastMousePosition.x;
-            const deltaY = event.touches[0].clientY - lastMousePosition.y;
-            
-            console.log('[Camera Controls] touchmove while dragging:', {
-                deltaX: deltaX.toFixed(2),
-                deltaY: deltaY.toFixed(2),
-                isControlPressed: isControlPressed,
-                mode: isControlPressed ? 'ROTATE' : 'PAN'
-            });
-            
-            // Use the same logic as mousemove
-            if (isControlPressed) {
-                // Rotate logic (same as mousemove)
-                const offset = new THREE.Vector3();
-                offset.subVectors(camera.position, controls.target);
-                
-                if (Math.abs(deltaY) > 0) {
-                    const pitchAngle = deltaY * rotationSpeed;
-                    const xAxis = new THREE.Vector3(1, 0, 0);
-                    const rotationMatrixX = new THREE.Matrix4();
-                    rotationMatrixX.makeRotationAxis(xAxis, pitchAngle);
-                    offset.applyMatrix4(rotationMatrixX);
-                }
-                
-                if (Math.abs(deltaX) > 0) {
-                    const yawAngle = deltaX * rotationSpeed;
-                    const yAxis = new THREE.Vector3(0, 1, 0);
-                    const rotationMatrixY = new THREE.Matrix4();
-                    rotationMatrixY.makeRotationAxis(yAxis, yawAngle);
-                    offset.applyMatrix4(rotationMatrixY);
-                }
-                
-                camera.position.copy(controls.target).add(offset);
-                camera.lookAt(controls.target);
-            } else {
-                // Pan logic (same as mousemove)
-                // Google Maps-like "grab and drag" behavior
-                const cameraDistance = camera.position.distanceTo(controls.target);
-                const scaledPanSpeed = panSpeed * (cameraDistance * 0.01);
-                
-                if (Math.abs(deltaY) > 0) {
-                    const yPanAmount = deltaY * scaledPanSpeed;
-                    const yPanVector = new THREE.Vector3(0, yPanAmount, 0);
-                    controls.target.add(yPanVector);
-                    camera.position.add(yPanVector);
-                }
-                
-                if (Math.abs(deltaX) > 0) {
-                    const xPanAmount = -deltaX * scaledPanSpeed;
-                    const xPanVector = new THREE.Vector3(xPanAmount, 0, 0);
-                    controls.target.add(xPanVector);
-                    camera.position.add(xPanVector);
-                }
-            }
-            
-            controls.update();
-            camera.updateMatrixWorld();
-            lastMousePosition.set(event.touches[0].clientX, event.touches[0].clientY);
-        }
-    }, { capture: true, passive: false });
-    
-    const handlePointerUp = (event) => {
-        console.log('[Camera Controls] pointerup/mouseup event:', {
-            type: event.type,
-            button: event.button,
-            buttons: event.buttons,
-            isDragging: isDragging,
-            pointerId: event.pointerId
-        });
-        
-        if (isDragging) {
-            event.preventDefault();
-            event.stopPropagation();
-            event.stopImmediatePropagation();
-            isDragging = false;
-            console.log('[Camera Controls] Dragging stopped');
-        }
-    };
-    
-    // Add both pointer and mouse events
-    canvasElement.addEventListener('pointerup', handlePointerUp, { capture: true, passive: false });
-    canvasElement.addEventListener('mouseup', handlePointerUp, { capture: true, passive: false });
-    
-    // Also on document as fallback
-    document.addEventListener('pointerup', handlePointerUp, { capture: true, passive: false });
-    document.addEventListener('mouseup', handlePointerUp, { capture: true, passive: false });
-    
-    // Handle touchend for Mac trackpads
-    canvasElement.addEventListener('touchend', (event) => {
-        console.log('[Camera Controls] touchend event');
+        if (!isDragging) return;
         event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
-        isDragging = false;
-        console.log('[Camera Controls] Touch dragging stopped');
-    }, { capture: true, passive: false });
-    
-    // Handle pointer cancel (Mac trackpads sometimes send this)
-    canvasElement.addEventListener('pointercancel', (event) => {
-        console.log('[Camera Controls] pointercancel event');
-        isDragging = false;
-    }, { capture: true, passive: false });
-    
-    canvasElement.addEventListener('mouseleave', () => {
-        if (isDragging) {
-            console.log('[Camera Controls] Mouse left canvas while dragging - stopping drag');
-            isDragging = false;
+        const dx = event.clientX - lastMousePosition.x;
+        const dy = event.clientY - lastMousePosition.y;
+        applyDelta(dx, dy);
+        lastMousePosition.set(event.clientX, event.clientY);
+    };
+    document.addEventListener('pointermove', handlePointerMove, { capture: true, passive: false });
+
+    const handlePointerUp = () => { isDragging = false; };
+    document.addEventListener('pointerup', handlePointerUp);
+    document.addEventListener('pointercancel', handlePointerUp);
+
+    // Zoom sync: apply identical zoom to both viewports
+    centerPanel.addEventListener('wheel', (event) => {
+        const delta = event.deltaY;
+        const factor = 1 + delta * 0.001;
+        for (const key of ['wt', 'ko']) {
+            const vp = viewports[key];
+            const offset = new THREE.Vector3().subVectors(vp.camera.position, vp.controls.target);
+            offset.multiplyScalar(factor);
+            vp.camera.position.copy(vp.controls.target).add(offset);
+            vp.controls.update();
         }
-    });
-    
-    canvasElement.addEventListener('pointerleave', () => {
-        if (isDragging) {
-            console.log('[Camera Controls] Pointer left canvas while dragging - stopping drag');
-            isDragging = false;
-        }
-    });
-    
-    // Test listener to see if ANY events are being received on the canvas
-    const testAllEvents = ['click', 'mousedown', 'pointerdown', 'touchstart', 'contextmenu'];
-    testAllEvents.forEach(eventType => {
-        canvasElement.addEventListener(eventType, (event) => {
-            console.log(`[Camera Controls] TEST - ${eventType} event received on canvas:`, {
-                type: event.type,
-                target: event.target?.tagName,
-                button: event.button,
-                buttons: event.buttons
-            });
-        }, { capture: true });
-    });
-    
-    // Also handle mouseup on window to catch cases where mouse is released outside canvas
-    window.addEventListener('mouseup', (event) => {
-        if (event.button === 0 || event.button === 2) {
-            if (isDragging) {
-                console.log('[Camera Controls] Mouse released outside canvas - stopping drag');
-                isDragging = false;
-            }
-        }
-    });
-    
-    // Add initial state logging
-    console.log('[Camera Controls] Initialized:', {
-        enableRotate: controls.enableRotate,
-        enablePan: controls.enablePan,
-        enableZoom: controls.enableZoom,
-        canvasElement: canvasElement ? 'found' : 'NOT FOUND'
-    });
-    
+        event.preventDefault();
+    }, { passive: false });
+
     // Prevent context menu on right click when Control is held
-    canvasElement.addEventListener('contextmenu', (event) => {
-        if (isControlPressed) {
-            event.preventDefault();
-        }
+    centerPanel.addEventListener('contextmenu', (event) => {
+        if (isControlPressed) event.preventDefault();
     });
-    
-    // Lighting
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-    scene.add(ambientLight);
-    
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.4);
-    directionalLight.position.set(1, 1, 1);
-    scene.add(directionalLight);
-    
-    // Handle window resize
+
     window.addEventListener('resize', onWindowResize);
-    
-    // Track SHIFT key for hover highlighting
+
+    // SHIFT key for hover highlighting
     window.addEventListener('keydown', (event) => {
-        if (event.key === 'Shift' || event.shiftKey) {
-            if (!isShiftPressed) {
-                isShiftPressed = true;
-                console.log('[Hover] SHIFT pressed - hover mode enabled');
-            }
-        }
+        if (event.key === 'Shift' || event.shiftKey) isShiftPressed = true;
     });
-    
     window.addEventListener('keyup', (event) => {
-        if (event.key === 'Shift' || !event.shiftKey) {
-            if (isShiftPressed) {
-                isShiftPressed = false;
-                console.log('[Hover] SHIFT released - hover mode disabled');
-                // Hide highlight and tooltip when SHIFT is released
-                hideHighlight();
-            }
-        }
+        if (event.key === 'Shift' || !event.shiftKey) { isShiftPressed = false; hideHighlight(); }
     });
-    
-    // Create tooltip element
+
+    // Shared tooltip
     tooltip = document.createElement('div');
     tooltip.id = 'point-tooltip';
-    tooltip.style.cssText = `
-        position: fixed;
-        background: rgba(0, 0, 0, 0.9);
-        color: white;
-        padding: 8px 12px;
-        border-radius: 4px;
-        font-size: 12px;
-        pointer-events: none;
-        z-index: 10000;
-        border: 1px solid rgba(255, 255, 255, 0.3);
-        display: none;
-        max-width: 300px;
-        line-height: 1.4;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.5);
-    `;
+    tooltip.className = 'point-tooltip';
     document.body.appendChild(tooltip);
-    console.log('[Hover] Tooltip element created');
-    
-    // Create highlight sphere (will be positioned dynamically)
-    // Use a slightly larger sphere with wireframe for white border effect
-    const highlightGeometry = new THREE.SphereGeometry(1, 16, 16);
-    const highlightMaterial = new THREE.MeshBasicMaterial({
-        color: 0xffffff,
-        transparent: false,
-        opacity: 1.0,
-        wireframe: true,
-        side: THREE.DoubleSide,
-        depthTest: true,
-        depthWrite: false // Don't write to depth buffer
-    });
-    highlightSphere = new THREE.Mesh(highlightGeometry, highlightMaterial);
-    highlightSphere.renderOrder = 1000; // Render on top
-    highlightSphere.visible = false;
-    scene.add(highlightSphere);
-    
-    console.log('[Hover] Highlight sphere created and added to scene');
-    
-    // Add mouse move handler for hover detection (reuse canvasElement from above)
-    const hoverCanvasElement = renderer.domElement;
-    hoverCanvasElement.addEventListener('mousemove', handleHover, { passive: true });
-    hoverCanvasElement.addEventListener('pointermove', handleHover, { passive: true });
-    
-    // Keep loading message visible initially (will be hidden after data loads)
+
+    // Hover on each viewport
+    for (const key of ['wt', 'ko']) {
+        const canvas = viewports[key].renderer.domElement;
+        canvas.addEventListener('pointermove', (event) => handleHoverForViewport(event, key), { passive: true });
+    }
 }
 
 function onWindowResize() {
-    const container = document.getElementById('center-panel');
-    const width = container.clientWidth;
-    const height = container.clientHeight;
-    
-    camera.aspect = width / height;
-    camera.updateProjectionMatrix();
-    renderer.setSize(width, height);
+    for (const key of ['wt', 'ko']) {
+        const vp = viewports[key];
+        const container = vp.renderer.domElement.parentElement;
+        if (!container) continue;
+        const width = container.clientWidth;
+        const height = container.clientHeight;
+        vp.camera.aspect = width / height;
+        vp.camera.updateProjectionMatrix();
+        vp.renderer.setSize(width, height);
+    }
 }
 
 function setupRightPanelResizer() {
@@ -710,148 +377,84 @@ function setupRightPanelResizer() {
     window.addEventListener('pointercancel', stopDragging);
 }
 
-// Handle hover detection when SHIFT is held
-function handleHover(event) {
-    // Only handle hover if SHIFT is pressed and not dragging camera
-    if (!isShiftPressed || !pointCloud || !renderedIndicesMap) {
+// Handle hover for a specific viewport
+function handleHoverForViewport(event, vpKey) {
+    const vp = viewports[vpKey];
+    if (!isShiftPressed || !vp.pointCloud || !vp.renderedIndicesMap) {
         hideHighlight();
         return;
     }
-    
-    // Don't interfere with camera controls - check if mouse buttons are pressed
-    if (event.buttons && event.buttons > 0) {
-        // User is dragging, don't show hover
-        hideHighlight();
-        return;
-    }
-    
-    const canvas = renderer.domElement;
+    if (event.buttons && event.buttons > 0) { hideHighlight(); return; }
+
+    const canvas = vp.renderer.domElement;
     const rect = canvas.getBoundingClientRect();
-    
-    // Calculate mouse position in normalized device coordinates (-1 to +1)
-    mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-    
-    // Update raycaster
+    vp.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    vp.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
     const pointSize = parseFloat(document.getElementById('pointSize')?.value || 1);
-    raycaster.setFromCamera(mouse, camera);
-    
-    // Set raycaster params for Points (threshold is the picking radius)
-    raycaster.params.Points.threshold = pointSize * 5;
-    
-    // Check intersection with Points object
+    vp.raycaster.setFromCamera(vp.mouse, vp.camera);
+    vp.raycaster.params.Points.threshold = pointSize * 5;
+
     try {
-        const intersects = raycaster.intersectObject(pointCloud, false);
-        
+        const intersects = vp.raycaster.intersectObject(vp.pointCloud, false);
         if (intersects.length > 0) {
-            const intersection = intersects[0];
-            const pointIndex = intersection.index; // For Points, use index instead of instanceId
-            
-            if (pointIndex !== undefined && pointIndex !== null && pointIndex < renderedIndicesMap.length) {
-                const dataIdx = renderedIndicesMap[pointIndex];
+            const pointIndex = intersects[0].index;
+            if (pointIndex !== undefined && pointIndex < vp.renderedIndicesMap.length) {
+                const dataIdx = vp.renderedIndicesMap[pointIndex];
                 if (dataIdx !== undefined && dataIdx < allData.length) {
                     const point = allData[dataIdx];
-                    
-                    // Show highlight at the actual point position (not intersection point)
-                    const pointPosition = new THREE.Vector3(point.x, point.y, point.z);
-                    showHighlight(pointPosition, point, event.clientX, event.clientY);
-                    
-                    // Log for debugging (only occasionally to avoid spam)
-                    if (Math.random() < 0.01) { // Log 1% of the time
-                        console.log('[Hover] Point highlighted:', {
-                            pointIndex,
-                            dataIdx,
-                            position: `(${point.x.toFixed(2)}, ${point.y.toFixed(2)}, ${point.z.toFixed(2)})`
-                        });
-                    }
-                } else {
-                    hideHighlight();
+                    const pos = new THREE.Vector3(point.x, point.y, point.z);
+                    showHighlight(pos, point, event.clientX, event.clientY, vp);
+                    return;
                 }
-            } else {
-                hideHighlight();
             }
-        } else {
-            hideHighlight();
         }
+        hideHighlight();
     } catch (error) {
-        console.warn('[Hover] Error in raycasting:', error);
         hideHighlight();
     }
 }
 
-// Show highlight and tooltip for a point
-function showHighlight(position, point, mouseX, mouseY) {
-    if (!highlightSphere || !tooltip) {
-        console.warn('[Hover] Highlight sphere or tooltip not available');
-        return;
-    }
-    
-    // Show and position highlight sphere
+function showHighlight(position, point, mouseX, mouseY, vp) {
+    if (!vp.highlightSphere || !tooltip) return;
     const pointSize = parseFloat(document.getElementById('pointSize')?.value || 1);
-    // Make highlight 1.5x the point size for visibility
-    const highlightScale = pointSize * 1.5;
-    highlightSphere.scale.set(highlightScale, highlightScale, highlightScale);
-    highlightSphere.position.copy(position);
-    highlightSphere.visible = true;
-    
-    // Create tooltip content
-    const colorBy = document.getElementById('colorBy')?.value || 'gene';
-    let tooltipContent = '<div style="font-weight: bold; margin-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.3); padding-bottom: 4px;">Point Information</div>';
-    
-    // Add coordinates with selected column names
-    tooltipContent += `<div style="margin-bottom: 4px;"><strong>${selectedCoordX}:</strong> ${point.x.toFixed(2)}, <strong>${selectedCoordY}:</strong> ${point.y.toFixed(2)}, <strong>${selectedCoordZ}:</strong> ${point.z.toFixed(2)}</div>`;
-    
-    // Add all categorical attributes
-    column_names_categorical.forEach(col => {
-        if (point[col] !== undefined && point[col] !== '') {
-            tooltipContent += `<div style="margin-bottom: 2px;"><strong>${col}:</strong> ${point[col]}</div>`;
-        }
-    });
-    
-    // Add all continuous attributes
-    column_names_continuous.forEach(col => {
-        if (point[col] !== null && point[col] !== undefined) {
-            tooltipContent += `<div style="margin-bottom: 2px;"><strong>${col}:</strong> ${point[col].toFixed(4)}</div>`;
-        }
-    });
-    
-    tooltip.innerHTML = tooltipContent;
+    const s = pointSize * 1.5;
+    vp.highlightSphere.scale.set(s, s, s);
+    vp.highlightSphere.position.copy(position);
+    vp.highlightSphere.visible = true;
+
+    const rows = [];
+    rows.push(`<div><strong>${selectedCoordX}:</strong> ${Number(point.x).toFixed(2)}</div>`);
+    rows.push(`<div><strong>${selectedCoordY}:</strong> ${Number(point.y).toFixed(2)}</div>`);
+    rows.push(`<div><strong>${selectedCoordZ}:</strong> ${Number(point.z).toFixed(2)}</div>`);
+
+    // Show all currently loaded non-internal attributes for this point.
+    const extraKeys = Object.keys(point)
+        .filter((k) => !['x', 'y', 'z'].includes(k) && !k.startsWith('_raw_'))
+        .sort((a, b) => a.localeCompare(b));
+
+    for (const key of extraKeys) {
+        const value = point[key];
+        if (value === undefined || value === null || value === '') continue;
+        const displayName = getAttributeDisplayName(key);
+        const displayValue = typeof value === 'number' ? value.toFixed(4) : String(value);
+        rows.push(`<div><strong>${displayName}:</strong> ${displayValue}</div>`);
+    }
+
+    let html = '<div class="point-tooltip-title">Point Information</div>';
+    html += rows.join('');
+    tooltip.innerHTML = html;
     tooltip.style.display = 'block';
-    
-    // Position tooltip near mouse cursor
-    const offset = 15;
-    tooltip.style.left = (mouseX + offset) + 'px';
-    tooltip.style.top = (mouseY + offset) + 'px';
-    
-    // Adjust if tooltip goes off screen
-    requestAnimationFrame(() => {
-        const tooltipRect = tooltip.getBoundingClientRect();
-        const windowWidth = window.innerWidth;
-        const windowHeight = window.innerHeight;
-        
-        if (tooltipRect.right > windowWidth) {
-            tooltip.style.left = (mouseX - tooltipRect.width - offset) + 'px';
-        }
-        if (tooltipRect.bottom > windowHeight) {
-            tooltip.style.top = (mouseY - tooltipRect.height - offset) + 'px';
-        }
-        if (tooltipRect.left < 0) {
-            tooltip.style.left = offset + 'px';
-        }
-        if (tooltipRect.top < 0) {
-            tooltip.style.top = offset + 'px';
-        }
-    });
+    const off = 15;
+    tooltip.style.left = (mouseX + off) + 'px';
+    tooltip.style.top = (mouseY + off) + 'px';
 }
 
-// Hide highlight and tooltip
 function hideHighlight() {
-    if (highlightSphere) {
-        highlightSphere.visible = false;
+    for (const key of ['wt', 'ko']) {
+        if (viewports[key].highlightSphere) viewports[key].highlightSphere.visible = false;
     }
-    if (tooltip) {
-        tooltip.style.display = 'none';
-    }
+    if (tooltip) tooltip.style.display = 'none';
 }
 
 // Helper function to load a single Parquet file with progress tracking
@@ -1114,12 +717,7 @@ async function loadMoreShards(targetShardCount) {
                 }
             }
             
-            // Set display coordinates from selected columns
-            point.x = point['_raw_' + selectedCoordX] ?? 0;
-            point.y = point['_raw_' + selectedCoordY] ?? 0;
-            point.z = point['_raw_' + selectedCoordZ] ?? 0;
-            
-            // Add loaded columns by index
+            // Add loaded columns by index (before setting display coords so Group is known)
             for (const col of loadedColumns) {
                 const idx = colIdx[col];
                 if (idx === undefined) continue;
@@ -1133,6 +731,14 @@ async function loadMoreShards(targetShardCount) {
                         attributeValues[col].add(point[col]);
                     }
                 }
+            }
+            
+            // Set display coordinates (after Group is known for KO offset)
+            point.x = point['_raw_' + selectedCoordX] ?? 0;
+            point.y = point['_raw_' + selectedCoordY] ?? 0;
+            point.z = point['_raw_' + selectedCoordZ] ?? 0;
+            if (point.Group === 'KO' && selectedCoordY === 'transformedZ') {
+                point.y += KO_TRANSFORMED_Y_OFFSET;
             }
             
             allData.push(point);
@@ -1155,8 +761,22 @@ async function loadMoreShards(targetShardCount) {
         // Update UI
         document.getElementById('pointCount').textContent = `Total points: ${allData.length.toLocaleString()} (${loadedShardCount * 10}% loaded)`;
         
-        // Recreate point cloud with new data
-        createPointCloud();
+        // Rebuild TimeRank slider with new data and re-filter
+        const prevRank = autoShiftTimeRankValues.length > 0
+            ? autoShiftTimeRankValues[autoShiftCurrentIndex]
+            : null;
+        buildTimeRankValues();
+        const slider = document.getElementById('timerankSlider');
+        if (slider && autoShiftTimeRankValues.length > 0) {
+            slider.max = autoShiftTimeRankValues.length - 1;
+            if (prevRank !== null) {
+                const newIdx = autoShiftTimeRankValues.indexOf(prevRank);
+                autoShiftCurrentIndex = newIdx >= 0 ? newIdx : 0;
+            }
+            slider.value = autoShiftCurrentIndex;
+        }
+        syncAutoShiftUI();
+        updateFilter();
         
     } finally {
         isLoadingShards = false;
@@ -1223,24 +843,29 @@ async function loadData() {
         const essentialColumns = [
             ...COORD_COLUMN_OPTIONS,
             'Time',
-            defaultColorBy
+            defaultColorBy,
+            'Group',
+            'HF',
+            'Sample',
+            'Gene'
         ];
+        // De-duplicate in case defaultColorBy is already one of the above
+        const essentialColumnsUnique = [...new Set(essentialColumns)];
         
         loadingText.textContent = 'Parsing essential columns...';
         await new Promise(resolve => setTimeout(resolve, 0));
         
         // Parse only essential columns
-        const rows = await parseParquetColumns(parquetBuffers, essentialColumns, (current, total) => {
+        const rows = await parseParquetColumns(parquetBuffers, essentialColumnsUnique, (current, total) => {
             loadingText.textContent = `Parsing file ${current}/${total}...`;
         });
         
         // Mark these columns as loaded
-        essentialColumns.forEach(col => loadedColumns.add(col));
+        essentialColumnsUnique.forEach(col => loadedColumns.add(col));
         
         // Create column index map (hyparquet returns arrays, not objects)
-        // The array indices correspond to the order of columns we requested
         const colIdx = {};
-        essentialColumns.forEach((col, idx) => {
+        essentialColumnsUnique.forEach((col, idx) => {
             colIdx[col] = idx;
         });
         
@@ -1268,11 +893,6 @@ async function loadData() {
                     }
                 }
                 
-                // Set display coordinates from selected columns
-                point.x = point['_raw_' + selectedCoordX] ?? 0;
-                point.y = point['_raw_' + selectedCoordY] ?? 0;
-                point.z = point['_raw_' + selectedCoordZ] ?? 0;
-                
                 // Add the default colorBy attribute (already loaded)
                 const rowDefaultColorBy = row[colIdx[defaultColorBy]];
                 point[defaultColorBy] = rowDefaultColorBy != null ? String(rowDefaultColorBy) : '';
@@ -1288,6 +908,26 @@ async function loadData() {
                     if (!continuousRanges.Time) continuousRanges.Time = { min: Infinity, max: -Infinity };
                     continuousRanges.Time.min = Math.min(continuousRanges.Time.min, rowTime);
                     continuousRanges.Time.max = Math.max(continuousRanges.Time.max, rowTime);
+                }
+                
+                // Eagerly load key categorical fields used in overlays/hover
+                for (const catCol of ['Group', 'HF', 'Sample', 'Gene']) {
+                    if (colIdx[catCol] !== undefined) {
+                        const val = row[colIdx[catCol]];
+                        point[catCol] = val != null ? String(val) : '';
+                        if (val) {
+                            if (!attributeValues[catCol]) attributeValues[catCol] = new Set();
+                            attributeValues[catCol].add(point[catCol]);
+                        }
+                    }
+                }
+                
+                // Set display coordinates (after Group is known for KO offset)
+                point.x = point['_raw_' + selectedCoordX] ?? 0;
+                point.y = point['_raw_' + selectedCoordY] ?? 0;
+                point.z = point['_raw_' + selectedCoordZ] ?? 0;
+                if (point.Group === 'KO' && selectedCoordY === 'transformedZ') {
+                    point.y += KO_TRANSFORMED_Y_OFFSET;
                 }
                 
                 allData.push(point);
@@ -1348,11 +988,11 @@ async function loadData() {
         // Populate colorBy dropdown
         const colorBySelect = document.getElementById('colorBy');
         colorBySelect.innerHTML = '';
-        const allAttributes = [...column_names_categorical, ...column_names_continuous];
+        const allAttributes = [...UI_CATEGORICAL_OPTIONS];
         allAttributes.forEach(attr => {
             const option = document.createElement('option');
             option.value = attr;
-            option.textContent = attr;
+            option.textContent = getAttributeDisplayName(attr);
             colorBySelect.appendChild(option);
         });
         if (allAttributes.length > 0) {
@@ -1364,7 +1004,9 @@ async function loadData() {
         
         // Create initial visualization
         loadingText.textContent = 'Rendering visualization...';
-        createPointCloud();
+        
+        // Initialize TimeRank slider and filter to first hair follicle
+        initTimerankSlider();
         
         // Initialize legend
         updateLegend();
@@ -1431,10 +1073,7 @@ function changeEntityColor(attribute, value, colorKey, colorDivElement) {
         // Update the color div in legend
         colorDivElement.style.backgroundColor = newHex;
         
-        // Re-render the point cloud with new colors
-        if (pointCloud) {
-            createPointCloud();
-        }
+        createPointCloud();
         
         // Clean up
         document.body.removeChild(colorInput);
@@ -1534,10 +1173,7 @@ function randomizeColors() {
     
     console.log(`[randomizeColors] Randomized colors for ${numValues} values`);
     
-    // Re-render the visualization
-    if (pointCloud) {
-        createPointCloud();
-    }
+    createPointCloud();
     
     // Update the legend to show new colors
     updateLegend();
@@ -1605,7 +1241,7 @@ function updateLegend() {
                 labelsDiv.innerHTML = `<span>${minVal.toFixed(4)}</span><span>${maxVal.toFixed(4)}</span>`;
                 legendDiv.appendChild(labelsDiv);
             } else {
-                legendDiv.innerHTML = `<div class="legend-label">No ${colorBy} data</div>`;
+                legendDiv.innerHTML = `<div class="legend-label">No ${getAttributeDisplayName(colorBy)} data</div>`;
             }
         } else {
             legendDiv.innerHTML = '<div class="legend-label">No visible data</div>';
@@ -1672,166 +1308,185 @@ function updateLegend() {
 }
 
 // Set camera to x-y plane view
+// Set both viewports' cameras to x-y plane view based on geometry bounds
 function setCameraToXYPlaneView(geometry) {
     geometry.computeBoundingBox();
     const box = geometry.boundingBox;
     const center = new THREE.Vector3();
     box.getCenter(center);
     const size = box.getSize(new THREE.Vector3());
-    
-    // Calculate the extent in x-y plane
     const xyExtent = Math.max(size.x, size.y);
-    
-    // Position camera above the center (along z-axis), looking down at x-y plane
-    // Calculate distance needed to see the full x-y extent
-    const fovRad = camera.fov * (Math.PI / 180);
-    
-    // Calculate distance needed to fit the larger of x or y extent
-    // For perspective camera: height_visible = 2 * distance * tan(fov/2)
-    const halfHeight = xyExtent / 2;
-    const distance = halfHeight / Math.tan(fovRad / 2);
-    
-    // Add some padding (10% margin)
-    const cameraHeight = Math.max(distance * 1.1, size.z * 1.5, 100);
-    
-    const cameraPosition = new THREE.Vector3(
-        center.x,
-        center.y,
-        center.z + cameraHeight
-    );
-    
-    camera.position.copy(cameraPosition);
-    camera.lookAt(center);
-    controls.target.copy(center);
-    controls.update();
-    
-    // Store initial state for reset
-    initialCameraState.position = cameraPosition.clone();
+
+    for (const key of ['wt', 'ko']) {
+        const vp = viewports[key];
+        const fovRad = vp.camera.fov * (Math.PI / 180);
+        const halfHeight = xyExtent / 2;
+        const distance = halfHeight / Math.tan(fovRad / 2);
+        const cameraHeight = Math.max(distance * 1.1, size.z * 1.5, 100);
+
+        const pos = new THREE.Vector3(center.x, center.y, center.z + cameraHeight);
+        vp.camera.position.copy(pos);
+        vp.camera.lookAt(center);
+        vp.controls.target.copy(center);
+        vp.controls.update();
+    }
+
+    initialCameraState.position = new THREE.Vector3(center.x, center.y, center.z + Math.max(xyExtent * 1.1, size.z * 1.5, 100));
     initialCameraState.target = center.clone();
-    
-    return { position: cameraPosition.clone(), target: center.clone() };
 }
 
-// Create point cloud with spheres
-function createPointCloud() {
-    // Remove existing point cloud
-    if (pointCloud) {
-        scene.remove(pointCloud);
-        pointCloud.geometry.dispose();
-        pointCloud.material.dispose();
+// Shared shader sources
+const pointVertexShader = `
+    attribute vec3 color;
+    varying vec3 vColor;
+    uniform float pointSize;
+    void main() {
+        vColor = color;
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = pointSize * (300.0 / -mvPosition.z);
+        gl_Position = projectionMatrix * mvPosition;
     }
-    
-    // Hide highlight when recreating point cloud
-    if (highlightSphere) {
-        highlightSphere.visible = false;
+`;
+const pointFragmentShader = `
+    varying vec3 vColor;
+    uniform float opacity;
+    void main() {
+        vec2 center = gl_PointCoord - vec2(0.5);
+        float dist = length(center);
+        if (dist > 0.5) discard;
+        float alpha = opacity * (1.0 - smoothstep(0.45, 0.5, dist));
+        gl_FragColor = vec4(vColor, alpha);
     }
-    
-    if (!visibleIndices || visibleIndices.length === 0) {
-        document.getElementById('visibleCount').textContent = 'Visible points: 0';
+`;
+
+// Build a point cloud for a subset of indices and add it to a viewport
+function buildPointCloudForViewport(vpKey, indices) {
+    const vp = viewports[vpKey];
+    if (vp.pointCloud) {
+        vp.scene.remove(vp.pointCloud);
+        vp.pointCloud.geometry.dispose();
+        vp.pointCloud.material.dispose();
+        vp.pointCloud = null;
+    }
+    if (vp.highlightSphere) vp.highlightSphere.visible = false;
+
+    if (!indices || indices.length === 0) {
+        vp.renderedIndicesMap = null;
         return;
     }
-    
+
     const colorBy = document.getElementById('colorBy').value;
     const pointSize = parseFloat(document.getElementById('pointSize').value);
-    
-    // Since shards are pre-shuffled random samples, just render up to MAX_POINTS
-    // No additional sampling needed - the data itself is already a random sample
-    const visibleCount = visibleIndices.length;
-    const renderCount = Math.min(visibleCount, MAX_POINTS);
-    
-    // Take the first renderCount points (they're already randomly ordered from shuffle)
-    const indicesToRender = visibleIndices.subarray(0, renderCount);
-    
-    const count = indicesToRender.length;
-    
-    // Create BufferGeometry for THREE.Points (much more efficient than InstancedMesh with spheres)
-    const geometry = new THREE.BufferGeometry();
+    const count = Math.min(indices.length, MAX_POINTS);
+    const indicesToRender = indices.subarray ? indices.subarray(0, count) : indices.slice(0, count);
+
     const positions = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
-    
     for (let i = 0; i < count; i++) {
-        const dataIdx = indicesToRender[i];
-        const point = allData[dataIdx];
-        
-        // Set position
+        const point = allData[indicesToRender[i]];
         positions[i * 3] = point.x;
         positions[i * 3 + 1] = point.y;
         positions[i * 3 + 2] = point.z;
-        
-        // Set color
-        const valueForColor = point[colorBy];
-        const pointColor = getColorForValue(valueForColor, colorBy);
-        colors[i * 3] = pointColor.r;
-        colors[i * 3 + 1] = pointColor.g;
-        colors[i * 3 + 2] = pointColor.b;
+        const c = getColorForValue(point[colorBy], colorBy);
+        colors[i * 3] = c.r;
+        colors[i * 3 + 1] = c.g;
+        colors[i * 3 + 2] = c.b;
     }
-    
+
+    const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    
-    // Create ShaderMaterial for circular points with smooth edges
+
     const material = new THREE.ShaderMaterial({
-        uniforms: {
-            pointSize: { value: pointSize * 2 },
-            opacity: { value: 0.8 }
-        },
-        vertexShader: `
-            attribute vec3 color;
-            varying vec3 vColor;
-            uniform float pointSize;
-            
-            void main() {
-                vColor = color;
-                vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-                gl_PointSize = pointSize * (300.0 / -mvPosition.z); // Size attenuation
-                gl_Position = projectionMatrix * mvPosition;
-            }
-        `,
-        fragmentShader: `
-            varying vec3 vColor;
-            uniform float opacity;
-            
-            void main() {
-                // Calculate distance from center of point (gl_PointCoord is 0-1)
-                vec2 center = gl_PointCoord - vec2(0.5);
-                float dist = length(center);
-                
-                // Discard pixels outside the circle
-                if (dist > 0.5) discard;
-                
-                // Smooth edge (anti-aliasing)
-                float alpha = opacity * (1.0 - smoothstep(0.45, 0.5, dist));
-                
-                gl_FragColor = vec4(vColor, alpha);
-            }
-        `,
+        uniforms: { pointSize: { value: pointSize * 2 }, opacity: { value: 0.8 } },
+        vertexShader: pointVertexShader,
+        fragmentShader: pointFragmentShader,
         transparent: true,
-        depthWrite: false, // Better blending for transparent points
+        depthWrite: false,
     });
-    
-    // Create the Points object
-    pointCloud = new THREE.Points(geometry, material);
-    scene.add(pointCloud);
-    
-    // Store mapping from instance index to data index for hover detection
-    renderedIndicesMap = indicesToRender;
-    
-    // Update legend
+
+    vp.pointCloud = new THREE.Points(geometry, material);
+    vp.scene.add(vp.pointCloud);
+    vp.renderedIndicesMap = indicesToRender;
+
+    return positions;
+}
+
+// Create point clouds for both viewports, splitting by Group
+function createPointCloud() {
+    if (!visibleIndices || visibleIndices.length === 0) {
+        for (const key of ['wt', 'ko']) buildPointCloudForViewport(key, null);
+        document.getElementById('visibleCount').textContent = 'Visible points: 0';
+        updateViewportInfo();
+        return;
+    }
+
+    // Split visible indices by Group
+    const wtIndices = [];
+    const koIndices = [];
+    for (let i = 0; i < visibleIndices.length; i++) {
+        const idx = visibleIndices[i];
+        const group = allData[idx].Group;
+        if (group === 'KO') {
+            koIndices.push(idx);
+        } else {
+            wtIndices.push(idx);
+        }
+    }
+
+    const wtArr = new Uint32Array(wtIndices);
+    const koArr = new Uint32Array(koIndices);
+
+    const wtPositions = buildPointCloudForViewport('wt', wtArr);
+    buildPointCloudForViewport('ko', koArr);
+
     updateLegend();
-    
-    // Update info
-    const isCapped = indicesToRender.length < visibleIndices.length;
-    document.getElementById('visibleCount').textContent = 
-        `Rendering: ${indicesToRender.length.toLocaleString()} points${isCapped ? ` (capped at ${MAX_POINTS.toLocaleString()})` : ''}`;
-    
-    // Auto-adjust camera for x-y plane view only on first render
-    if (!cameraInitialized) {
+    updateViewportInfo();
+
+    const totalRendered = Math.min(wtIndices.length, MAX_POINTS) + Math.min(koIndices.length, MAX_POINTS);
+    document.getElementById('visibleCount').textContent = `Rendering: ${totalRendered.toLocaleString()} points (WT: ${Math.min(wtIndices.length, MAX_POINTS).toLocaleString()}, KO: ${Math.min(koIndices.length, MAX_POINTS).toLocaleString()})`;
+
+    if (!cameraInitialized && wtPositions && wtPositions.length > 0) {
         const tempGeometry = new THREE.BufferGeometry();
-        tempGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        tempGeometry.setAttribute('position', new THREE.BufferAttribute(wtPositions, 3));
         tempGeometry.computeBoundingBox();
         setCameraToXYPlaneView(tempGeometry);
         tempGeometry.dispose();
         cameraInitialized = true;
+    }
+}
+
+// Update the info overlays in each viewport with HF, Sample, TimeRank
+function updateViewportInfo() {
+    const wtInfoEl = document.getElementById('viewport-info-wt');
+    const koInfoEl = document.getElementById('viewport-info-ko');
+    if (!wtInfoEl || !koInfoEl) return;
+
+    if (autoShiftTimeRankValues.length === 0) {
+        wtInfoEl.innerHTML = '';
+        koInfoEl.innerHTML = '';
+        return;
+    }
+
+    const targetRank = autoShiftTimeRankValues[autoShiftCurrentIndex];
+
+    // Find a representative point for each group at this TimeRank
+    for (const [group, el] of [['WT', wtInfoEl], ['KO', koInfoEl]]) {
+        let hfVal = '—', sampleVal = '—', trVal = targetRank;
+        // Scan visible data for first point matching this group & TimeRank
+        if (visibleIndices) {
+            for (let i = 0; i < visibleIndices.length; i++) {
+                const p = allData[visibleIndices[i]];
+                const pGroup = p.Group || '';
+                const isMatch = (group === 'WT') ? (pGroup !== 'KO') : (pGroup === 'KO');
+                if (isMatch && p._raw_TimeRank === targetRank) {
+                    hfVal = p.HF || '—';
+                    sampleVal = p.Sample || '—';
+                    break;
+                }
+            }
+        }
+        el.innerHTML = `<div><strong>HF:</strong> ${hfVal}</div><div><strong>Sample:</strong> ${sampleVal}</div><div><strong>TimeRank:</strong> ${trVal}</div>`;
     }
 }
 
@@ -1841,9 +1496,9 @@ function createFilterElement(filterId, attribute) {
     filterDiv.className = 'filter-block';
     filterDiv.dataset.filterId = filterId;
     
-    const availableAttributes = [...column_names_categorical, ...column_names_continuous];
+    const availableAttributes = [...UI_CATEGORICAL_OPTIONS];
     const availableOptions = availableAttributes.map(attr => 
-        `<option value="${attr}" ${attr === attribute ? 'selected' : ''}>${attr}</option>`
+        `<option value="${attr}" ${attr === attribute ? 'selected' : ''}>${getAttributeDisplayName(attr)}</option>`
     ).join('');
     
     if (column_names_continuous.includes(attribute)) {
@@ -2189,8 +1844,8 @@ function updateFilter() {
     
     console.log(`[Filter] Final visible points: ${visibleIndices.length} out of ${allData.length} total`);
     
-    // Apply auto-shift TimeRank filter on top of user filters
-    if (autoShiftEnabled && autoShiftTimeRankValues.length > 0) {
+    // Always filter to the currently selected TimeRank value
+    if (timerankFilterActive && autoShiftTimeRankValues.length > 0) {
         const targetRank = autoShiftTimeRankValues[autoShiftCurrentIndex];
         const shifted = [];
         for (let i = 0; i < visibleIndices.length; i++) {
@@ -2216,14 +1871,15 @@ function buildTimeRankValues() {
     console.log(`[AutoShift] Found ${autoShiftTimeRankValues.length} unique TimeRank values`);
 }
 
-// Update the auto-shift slider and label to reflect the current index
+// Update the TimeRank slider and label to reflect the current index
 function syncAutoShiftUI() {
-    const slider = document.getElementById('autoShiftSlider');
-    const statusEl = document.getElementById('autoShiftStatus');
+    const slider = document.getElementById('timerankSlider');
+    const statusEl = document.getElementById('timerankStatus');
     if (slider) slider.value = autoShiftCurrentIndex;
-    if (statusEl) {
-        statusEl.textContent = `TimeRank: ${autoShiftTimeRankValues[autoShiftCurrentIndex]} (${autoShiftCurrentIndex + 1}/${autoShiftTimeRankValues.length})`;
+    if (statusEl && autoShiftTimeRankValues.length > 0) {
+        statusEl.textContent = `${autoShiftTimeRankValues[autoShiftCurrentIndex]} (${autoShiftCurrentIndex + 1}/${autoShiftTimeRankValues.length})`;
     }
+    updateViewportInfo();
 }
 
 // Advance to the next TimeRank and re-filter
@@ -2235,67 +1891,48 @@ function autoShiftTick() {
     updateFilter();
 }
 
-// Start the auto-shift animation
-function startAutoShift() {
+// Initialize the TimeRank slider after data is loaded
+function initTimerankSlider() {
     buildTimeRankValues();
+    if (autoShiftTimeRankValues.length === 0) {
+        return;
+    }
+    const defaultIndex = autoShiftTimeRankValues.indexOf(DEFAULT_TIMERANK);
+    autoShiftCurrentIndex = defaultIndex >= 0 ? defaultIndex : 0;
+
+    const slider = document.getElementById('timerankSlider');
+    if (slider) {
+        slider.min = 0;
+        slider.max = autoShiftTimeRankValues.length - 1;
+        slider.value = autoShiftCurrentIndex;
+    }
+    syncAutoShiftUI();
+    updateFilter();
+}
+
+// Start the auto-play animation
+function startAutoShift() {
     if (autoShiftTimeRankValues.length === 0) {
         console.warn('[AutoShift] No TimeRank values found');
         return;
     }
-    autoShiftCurrentIndex = 0;
     autoShiftEnabled = true;
-
-    // Configure and show the slider
-    const container = document.getElementById('autoShiftSliderContainer');
-    const slider = document.getElementById('autoShiftSlider');
-    if (container) container.style.display = 'block';
-    if (slider) {
-        slider.min = 0;
-        slider.max = autoShiftTimeRankValues.length - 1;
-        slider.value = 0;
-    }
-    syncAutoShiftUI();
-
-    updateFilter();
-
     autoShiftIntervalId = setInterval(autoShiftTick, AUTO_SHIFT_INTERVAL_MS);
     console.log('[AutoShift] Started');
 }
 
-// Stop the auto-shift animation and restore full view
+// Stop the auto-play animation (slider stays, filtering stays)
 function stopAutoShift() {
     autoShiftEnabled = false;
     if (autoShiftIntervalId !== null) {
         clearInterval(autoShiftIntervalId);
         autoShiftIntervalId = null;
     }
-
-    const container = document.getElementById('autoShiftSliderContainer');
-    if (container) container.style.display = 'none';
-
-    updateFilter();
     console.log('[AutoShift] Stopped');
 }
 
-// Populate the coordinate axis dropdowns
-function populateCoordDropdowns() {
-    const xSelect = document.getElementById('coordX');
-    const ySelect = document.getElementById('coordY');
-    const zSelect = document.getElementById('coordZ');
-    if (!xSelect || !ySelect || !zSelect) return;
-
-    [xSelect, ySelect, zSelect].forEach((sel, axisIdx) => {
-        sel.innerHTML = '';
-        const defaultVal = [selectedCoordX, selectedCoordY, selectedCoordZ][axisIdx];
-        COORD_COLUMN_OPTIONS.forEach(col => {
-            const opt = document.createElement('option');
-            opt.value = col;
-            opt.textContent = col;
-            if (col === defaultVal) opt.selected = true;
-            sel.appendChild(opt);
-        });
-    });
-}
+// No-op: coordinate preset dropdown is static HTML
+function populateCoordDropdowns() {}
 
 // Remap coordinates from stored raw column values
 function remapCoordinates() {
@@ -2306,6 +1943,9 @@ function remapCoordinates() {
         point.x = point['_raw_' + selectedCoordX] ?? 0;
         point.y = point['_raw_' + selectedCoordY] ?? 0;
         point.z = point['_raw_' + selectedCoordZ] ?? 0;
+        if (point.Group === 'KO' && selectedCoordY === 'transformedZ') {
+            point.y += KO_TRANSFORMED_Y_OFFSET;
+        }
     }
 
     cameraInitialized = false;
@@ -2320,16 +1960,15 @@ function remapCoordinates() {
 
 // Setup event listeners
 function setupEventListeners() {
-    // Coordinate axis change handlers
-    function handleCoordChange() {
-        selectedCoordX = document.getElementById('coordX').value;
-        selectedCoordY = document.getElementById('coordY').value;
-        selectedCoordZ = document.getElementById('coordZ').value;
+    // Coordinate preset change handler
+    document.getElementById('coordPreset').addEventListener('change', (e) => {
+        const preset = COORD_PRESETS[e.target.value];
+        if (!preset) return;
+        selectedCoordX = preset.x;
+        selectedCoordY = preset.y;
+        selectedCoordZ = preset.z;
         remapCoordinates();
-    }
-    document.getElementById('coordX').addEventListener('change', handleCoordChange);
-    document.getElementById('coordY').addEventListener('change', handleCoordChange);
-    document.getElementById('coordZ').addEventListener('change', handleCoordChange);
+    });
     
     // Randomize colors button
     const randomizeButton = document.getElementById('randomizeColors');
@@ -2347,12 +1986,7 @@ function setupEventListeners() {
             await lazyLoadColumn(colorBy);
         }
         
-        // Update colors
-        if (pointCloud) {
-            createPointCloud();
-        } else {
-            updateLegend();
-        }
+        createPointCloud();
     });
     
     // Add filter button
@@ -2376,9 +2010,11 @@ function setupEventListeners() {
     document.getElementById('pointSize').addEventListener('input', (e) => {
         const newSize = parseFloat(e.target.value);
         document.getElementById('pointSizeValue').textContent = newSize.toFixed(1);
-        // Update shader uniform directly for instant response (no need to recreate point cloud)
-        if (pointCloud && pointCloud.material && pointCloud.material.uniforms) {
-            pointCloud.material.uniforms.pointSize.value = newSize * 2;
+        for (const key of ['wt', 'ko']) {
+            const pc = viewports[key].pointCloud;
+            if (pc && pc.material && pc.material.uniforms) {
+                pc.material.uniforms.pointSize.value = newSize * 2;
+            }
         }
     });
     
@@ -2400,37 +2036,29 @@ function setupEventListeners() {
     
     
     document.getElementById('resetCamera').addEventListener('click', () => {
-        if (pointCloud) {
-            // Recalculate bounding box from current visible data
-            const positions = [];
-            if (visibleIndices && visibleIndices.length > 0) {
-                const MAX_SAMPLE = 10000; // Sample points for bounding box calculation
-                const step = Math.max(1, Math.floor(visibleIndices.length / MAX_SAMPLE));
-                for (let i = 0; i < visibleIndices.length; i += step) {
-                    const point = allData[visibleIndices[i]];
-                    positions.push(point.x, point.y, point.z);
-                }
+        const positions = [];
+        if (visibleIndices && visibleIndices.length > 0) {
+            const MAX_SAMPLE = 10000;
+            const step = Math.max(1, Math.floor(visibleIndices.length / MAX_SAMPLE));
+            for (let i = 0; i < visibleIndices.length; i += step) {
+                const point = allData[visibleIndices[i]];
+                positions.push(point.x, point.y, point.z);
             }
-            
-            if (positions.length > 0) {
-                const tempGeometry = new THREE.BufferGeometry();
-                tempGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
-                tempGeometry.computeBoundingBox();
-                setCameraToXYPlaneView(tempGeometry);
-                tempGeometry.dispose();
-            } else if (initialCameraState.position && initialCameraState.target) {
-                // Fall back to stored initial state
-                camera.position.copy(initialCameraState.position);
-                controls.target.copy(initialCameraState.target);
-                camera.lookAt(initialCameraState.target);
-                controls.update();
-            }
+        }
+        if (positions.length > 0) {
+            const tempGeometry = new THREE.BufferGeometry();
+            tempGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+            tempGeometry.computeBoundingBox();
+            setCameraToXYPlaneView(tempGeometry);
+            tempGeometry.dispose();
         } else if (initialCameraState.position && initialCameraState.target) {
-            // Use stored initial state if no point cloud yet
-            camera.position.copy(initialCameraState.position);
-            controls.target.copy(initialCameraState.target);
-            camera.lookAt(initialCameraState.target);
-            controls.update();
+            for (const key of ['wt', 'ko']) {
+                const vp = viewports[key];
+                vp.camera.position.copy(initialCameraState.position);
+                vp.controls.target.copy(initialCameraState.target);
+                vp.camera.lookAt(initialCameraState.target);
+                vp.controls.update();
+            }
         }
     });
     
@@ -2440,24 +2068,15 @@ function setupEventListeners() {
         console.log('[Camera] Auto-rotate:', autoRotateEnabled ? 'enabled' : 'disabled');
     });
 
-    // Auto-shift checkbox
-    document.getElementById('autoShift').addEventListener('change', (e) => {
-        if (e.target.checked) {
-            startAutoShift();
-        } else {
-            stopAutoShift();
-        }
-    });
-
-    // Auto-shift slider – lets the user scrub to a specific TimeRank
-    document.getElementById('autoShiftSlider').addEventListener('input', (e) => {
+    // TimeRank slider – scrub to a specific hair follicle
+    document.getElementById('timerankSlider').addEventListener('input', (e) => {
         const idx = parseInt(e.target.value);
         if (isNaN(idx) || idx < 0 || idx >= autoShiftTimeRankValues.length) return;
 
         autoShiftCurrentIndex = idx;
         syncAutoShiftUI();
 
-        // Pause the animation while the user is dragging
+        // Pause auto-play while dragging
         if (autoShiftIntervalId !== null) {
             clearInterval(autoShiftIntervalId);
             autoShiftIntervalId = null;
@@ -2466,10 +2085,19 @@ function setupEventListeners() {
         updateFilter();
     });
 
-    // Resume animation when the user releases the slider
-    document.getElementById('autoShiftSlider').addEventListener('change', () => {
+    // Resume auto-play when user releases the slider (if Play is checked)
+    document.getElementById('timerankSlider').addEventListener('change', () => {
         if (autoShiftEnabled && autoShiftIntervalId === null) {
             autoShiftIntervalId = setInterval(autoShiftTick, AUTO_SHIFT_INTERVAL_MS);
+        }
+    });
+
+    // Play checkbox for auto-advancing through TimeRank
+    document.getElementById('timerankPlay').addEventListener('change', (e) => {
+        if (e.target.checked) {
+            startAutoShift();
+        } else {
+            stopAutoShift();
         }
     });
 }
@@ -2477,31 +2105,26 @@ function setupEventListeners() {
 // Animation loop
 function animate() {
     requestAnimationFrame(animate);
-    
-    // Auto-rotation: rotate camera around the target
-    if (autoRotateEnabled && controls && controls.target) {
-        const rotationSpeed = 0.002; // Radians per frame
-        
-        // Get camera's offset from target
-        const offset = new THREE.Vector3();
-        offset.subVectors(camera.position, controls.target);
-        
-        // Rotate around Y axis
-        const angle = rotationSpeed;
-        const cos = Math.cos(angle);
-        const sin = Math.sin(angle);
-        const x = offset.x * cos - offset.z * sin;
-        const z = offset.x * sin + offset.z * cos;
-        offset.x = x;
-        offset.z = z;
-        
-        // Update camera position
-        camera.position.copy(controls.target).add(offset);
-        camera.lookAt(controls.target);
+
+    for (const key of ['wt', 'ko']) {
+        const vp = viewports[key];
+
+        if (autoRotateEnabled && vp.controls && vp.controls.target) {
+            const rotSpeed = 0.002;
+            const offset = new THREE.Vector3().subVectors(vp.camera.position, vp.controls.target);
+            const cos = Math.cos(rotSpeed);
+            const sin = Math.sin(rotSpeed);
+            const x = offset.x * cos - offset.z * sin;
+            const z = offset.x * sin + offset.z * cos;
+            offset.x = x;
+            offset.z = z;
+            vp.camera.position.copy(vp.controls.target).add(offset);
+            vp.camera.lookAt(vp.controls.target);
+        }
+
+        vp.controls.update();
+        vp.renderer.render(vp.scene, vp.camera);
     }
-    
-    controls.update();
-    renderer.render(scene, camera);
 }
 
 // Initialize when page loads

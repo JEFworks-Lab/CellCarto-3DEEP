@@ -123,6 +123,9 @@ body[data-theme="light"] .panel-content {
 /* Center Panel - Visualization */
 #center-panel {
     position: relative;
+    display: grid;
+    grid-template-rows: 1fr 1fr;
+    gap: 4px;
     background: rgba(0, 0, 0, 0.4);
     backdrop-filter: blur(10px);
     border-radius: 16px;
@@ -137,10 +140,184 @@ body[data-theme="light"] #center-panel {
     box-shadow: 0 10px 28px rgba(18, 22, 28, 0.12);
 }
 
-#scene {
+.viewport {
+    position: relative;
+    overflow: hidden;
+}
+
+.viewport canvas {
     width: 100%;
     height: 100%;
     display: block;
+}
+
+.viewport-label {
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    z-index: 5;
+    font-size: 0.78em;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: rgba(255, 255, 255, 0.55);
+    pointer-events: none;
+}
+
+body[data-theme="light"] .viewport-label {
+    color: rgba(26, 34, 43, 0.45);
+}
+
+.viewport-info {
+    position: absolute;
+    top: 8px;
+    left: 10px;
+    z-index: 5;
+    font-size: 0.78em;
+    line-height: 1.5;
+    color: rgba(255, 255, 255, 0.8);
+    pointer-events: none;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+
+body[data-theme="light"] .viewport-info {
+    color: rgba(26, 34, 43, 0.75);
+    text-shadow: 0 1px 4px rgba(255, 255, 255, 0.6);
+}
+
+/* TimeRank slider bar at the bottom of the center panel */
+#timerank-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    background: rgba(0, 0, 0, 0.65);
+    backdrop-filter: blur(8px);
+    z-index: 10;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+#timerank-bar label {
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 0.82em;
+    font-weight: 600;
+    white-space: nowrap;
+    letter-spacing: 0.3px;
+}
+
+#timerankSlider {
+    flex: 1;
+    height: 6px;
+    margin: 0;
+    padding: 0;
+    background: rgba(255, 255, 255, 0.24);
+    border-radius: 999px;
+}
+
+#timerankSlider::-webkit-slider-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #eaf1ff;
+    border: 2px solid #1f2937;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+#timerankSlider::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #eaf1ff;
+    border: 2px solid #1f2937;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+#timerankStatus {
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 0.8em;
+    white-space: nowrap;
+    min-width: 80px;
+    text-align: right;
+}
+
+.timerank-play-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+}
+
+.timerank-play-label input[type="checkbox"] {
+    margin: 0;
+    accent-color: rgba(255, 255, 255, 0.8);
+}
+
+body[data-theme="light"] #timerank-bar {
+    background: rgba(255, 255, 255, 0.8);
+    border-top-color: rgba(26, 34, 43, 0.14);
+}
+
+body[data-theme="light"] #timerankSlider {
+    background: rgba(26, 34, 43, 0.22);
+}
+
+body[data-theme="light"] #timerankSlider::-webkit-slider-thumb {
+    background: #1a222b;
+    border: 2px solid #ffffff;
+    box-shadow: 0 0 0 1px rgba(26, 34, 43, 0.35);
+}
+
+body[data-theme="light"] #timerankSlider::-moz-range-thumb {
+    background: #1a222b;
+    border: 2px solid #ffffff;
+    box-shadow: 0 0 0 1px rgba(26, 34, 43, 0.35);
+}
+
+body[data-theme="light"] #timerank-bar label,
+body[data-theme="light"] #timerankStatus {
+    color: #1a222b;
+}
+
+body[data-theme="light"] .timerank-play-label input[type="checkbox"] {
+    accent-color: #1a222b;
+}
+
+.point-tooltip {
+    position: fixed;
+    background: rgba(0, 0, 0, 0.9);
+    color: #ffffff;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    pointer-events: none;
+    z-index: 10000;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    display: none;
+    max-width: 340px;
+    line-height: 1.45;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.45);
+}
+
+.point-tooltip-title {
+    font-weight: 700;
+    margin-bottom: 6px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+    padding-bottom: 4px;
+}
+
+body[data-theme="light"] .point-tooltip {
+    background: rgba(255, 255, 255, 0.96);
+    color: #1a222b;
+    border: 1px solid rgba(26, 34, 43, 0.25);
+    box-shadow: 0 6px 14px rgba(18, 22, 28, 0.2);
+}
+
+body[data-theme="light"] .point-tooltip-title {
+    border-bottom-color: rgba(26, 34, 43, 0.25);
 }
 
 #loading {

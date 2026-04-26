@@ -47,10 +47,28 @@
         </div>
 
         <div id="center-panel">
-            <canvas id="scene"></canvas>
+            <div id="viewport-wt" class="viewport">
+                <div class="viewport-label">WT</div>
+                <div class="viewport-info" id="viewport-info-wt"></div>
+                <canvas id="scene-wt"></canvas>
+            </div>
+            <div id="viewport-ko" class="viewport">
+                <div class="viewport-label">KO</div>
+                <div class="viewport-info" id="viewport-info-ko"></div>
+                <canvas id="scene-ko"></canvas>
+            </div>
             <div id="loading">
                 <div class="loading-spinner"></div>
                 <div class="loading-text">Loading data... This may take a moment.</div>
+            </div>
+            <div id="timerank-bar">
+                <label for="timerankSlider" id="timerankLabel">Hair Follicle</label>
+                <input type="range" id="timerankSlider" min="0" max="0" step="1" value="0">
+                <span id="timerankStatus"></span>
+                <label class="timerank-play-label">
+                    <input type="checkbox" id="timerankPlay">
+                    Play
+                </label>
             </div>
         </div>
 
@@ -68,20 +86,11 @@
                 <h2>Controls</h2>
                 
                 <div class="control-group">
-                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
-                        <div>
-                            <label for="coordX">X-Axis:</label>
-                            <select id="coordX" style="width: 100%;"></select>
-                        </div>
-                        <div>
-                            <label for="coordZ">Y-Axis:</label>
-                            <select id="coordZ" style="width: 100%;"></select>
-                        </div>
-                        <div>
-                            <label for="coordY">Z-Axis:</label>
-                            <select id="coordY" style="width: 100%;"></select>
-                        </div>
-                    </div>
+                    <label for="coordPreset">3D Coordinate:</label>
+                    <select id="coordPreset">
+                        <option value="transformed" selected>transformedX / transformedY / transformedZ</option>
+                        <option value="raw">x / y / z</option>
+                    </select>
                 </div>
 
                 <div class="control-group">
@@ -98,8 +107,8 @@
 
                 <div class="control-group">
                     <label for="pointSize">Point Size:</label>
-                    <input type="range" id="pointSize" min="0.1" max="5" step="0.1" value="1">
-                    <span id="pointSizeValue">1.0</span>
+                    <input type="range" id="pointSize" min="0.1" max="5" step="0.1" value="2.5">
+                    <span id="pointSizeValue">2.5</span>
                 </div>
 
                 <div class="control-group">
@@ -124,16 +133,8 @@
                     </label>
                 </div>
 
-                <div class="control-group">
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="autoShift">
-                        Auto-shift
-                    </label>
-                    <div id="autoShiftSliderContainer" style="display: none; margin-top: 4px;">
-                        <input type="range" id="autoShiftSlider" min="0" max="0" step="1" value="0" style="width: 100%;">
-                        <span id="autoShiftStatus" style="font-size: 0.85em; color: #95a5a6;"></span>
-                    </div>
-                </div>
+
+
             </div>
         </div>
     </div>
