@@ -53,6 +53,57 @@ let isShiftPressed = false; // Track SHIFT key state
 let raycaster = new THREE.Raycaster(); // For point picking
 let mouse = new THREE.Vector2(); // Mouse position for raycasting
 let eventListenersInitialized = false; // Track if event listeners have been set up
+let currentTheme = 'dark';
+
+const THEME_STORAGE_KEY = 'kidney-cellcarto-theme';
+const SCENE_THEME_COLORS = {
+    dark: 0x1a1a1a,
+    light: 0xf5f7fb
+};
+
+function updateSceneTheme(theme) {
+    if (!scene) {
+        return;
+    }
+    const color = SCENE_THEME_COLORS[theme] ?? SCENE_THEME_COLORS.dark;
+    scene.background = new THREE.Color(color);
+}
+
+function applyTheme(theme) {
+    if (!document.body) {
+        return;
+    }
+    currentTheme = theme;
+    document.body.dataset.theme = theme;
+    const toggle = document.getElementById('themeToggle');
+    const label = document.querySelector('.theme-switch-text');
+    if (toggle) {
+        toggle.checked = theme === 'light';
+    }
+    if (label) {
+        label.textContent = theme === 'light' ? 'Light' : 'Dark';
+    }
+    updateSceneTheme(theme);
+}
+
+function setupThemeToggle() {
+    const toggle = document.getElementById('themeToggle');
+    if (!toggle) {
+        return;
+    }
+    const storedTheme = localStorage.getItem(THEME_STORAGE_KEY);
+    const prefersLight = window.matchMedia
+        ? window.matchMedia('(prefers-color-scheme: light)').matches
+        : false;
+    const initialTheme = storedTheme || (prefersLight ? 'light' : 'dark');
+    applyTheme(initialTheme);
+
+    toggle.addEventListener('change', () => {
+        const theme = toggle.checked ? 'light' : 'dark';
+        applyTheme(theme);
+        localStorage.setItem(THEME_STORAGE_KEY, theme);
+    });
+}
 
 // Lazy loading state
 let parquetBuffers = []; // Store downloaded buffers for lazy loading columns
@@ -70,7 +121,7 @@ function initScene() {
     
     // Scene
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x1a1a1a);
+    updateSceneTheme(currentTheme);
     
     // Camera
     const width = container.clientWidth;
@@ -2390,6 +2441,7 @@ function animate() {
 
 // Initialize when page loads
 window.addEventListener('DOMContentLoaded', () => {
+    setupThemeToggle();
     initScene();
     loadData();
 });

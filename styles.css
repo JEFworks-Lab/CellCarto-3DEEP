@@ -14,6 +14,10 @@ body {
     background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
 }
 
+body[data-theme="light"] {
+    background: linear-gradient(135deg, #f2f4f8 0%, #e4e8f0 100%);
+}
+
 .logo {
     padding: 12px;
     margin-bottom: 12px;
@@ -27,6 +31,10 @@ body {
     gap: 12px;
     padding: 12px;
     background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+}
+
+body[data-theme="light"] #container {
+    background: linear-gradient(135deg, #f2f4f8 0%, #e4e8f0 100%);
 }
 
 /* Left Panel - Description and Legend */
@@ -45,6 +53,12 @@ body {
     overflow-y: auto;
     border: 1px solid rgba(255, 255, 255, 0.1);
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+body[data-theme="light"] .panel-content {
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(21, 27, 36, 0.12);
+    box-shadow: 0 10px 28px rgba(18, 22, 28, 0.12);
 }
 
 #description-section {
@@ -116,6 +130,12 @@ body {
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
 }
 
+body[data-theme="light"] #center-panel {
+    background: rgba(255, 255, 255, 0.75);
+    border: 1px solid rgba(21, 27, 36, 0.12);
+    box-shadow: 0 10px 28px rgba(18, 22, 28, 0.12);
+}
+
 #scene {
     width: 100%;
     height: 100%;
@@ -178,6 +198,172 @@ body {
     font-weight: 500;
     text-transform: uppercase;
     letter-spacing: 1px;
+}
+
+body[data-theme="light"] #left-panel h1,
+body[data-theme="light"] #right-panel h2,
+body[data-theme="light"] #legend-section h2 {
+    color: #1a222b;
+}
+
+body[data-theme="light"] #description,
+body[data-theme="light"] .control-group label,
+body[data-theme="light"] .control-group,
+body[data-theme="light"] .info p,
+body[data-theme="light"] .legend-label,
+body[data-theme="light"] .time-values,
+body[data-theme="light"] #description a {
+    color: rgba(26, 34, 43, 0.72);
+}
+
+body[data-theme="light"] .control-group select,
+body[data-theme="light"] .control-group input[type="range"],
+body[data-theme="light"] button,
+body[data-theme="light"] .remove-filter,
+body[data-theme="light"] .filter-block,
+body[data-theme="light"] .filter-checkboxes-container,
+body[data-theme="light"] .legend {
+    background: rgba(26, 34, 43, 0.08);
+    border-color: rgba(26, 34, 43, 0.2);
+    color: #1a222b;
+}
+
+body[data-theme="light"] .control-group select:hover,
+body[data-theme="light"] button:hover,
+body[data-theme="light"] .remove-filter:hover {
+    background: rgba(26, 34, 43, 0.12);
+}
+
+body[data-theme="light"] .legend-color,
+body[data-theme="light"] .legend-gradient {
+    border-color: rgba(26, 34, 43, 0.2);
+}
+
+body[data-theme="light"] #loading {
+    background: rgba(255, 255, 255, 0.96);
+    color: #1a222b;
+    border: 1px solid rgba(21, 27, 36, 0.14);
+}
+
+body[data-theme="light"] .loading-spinner {
+    border-color: rgba(26, 34, 43, 0.2);
+    border-top-color: #1a222b;
+}
+
+body[data-theme="light"] .loading-text {
+    color: #1a222b;
+}
+
+body[data-theme="light"] input[type="range"] {
+    background: rgba(26, 34, 43, 0.16);
+}
+
+body[data-theme="light"] input[type="range"]::-webkit-slider-thumb,
+body[data-theme="light"] input[type="range"]::-moz-range-thumb {
+    background: #1a222b;
+}
+
+body[data-theme="light"] .panel-content::-webkit-scrollbar-track,
+body[data-theme="light"] .filter-checkboxes::-webkit-scrollbar-track,
+body[data-theme="light"] .legend::-webkit-scrollbar-track {
+    background: rgba(26, 34, 43, 0.08);
+}
+
+body[data-theme="light"] .panel-content::-webkit-scrollbar-thumb,
+body[data-theme="light"] .filter-checkboxes::-webkit-scrollbar-thumb,
+body[data-theme="light"] .legend::-webkit-scrollbar-thumb {
+    background: rgba(26, 34, 43, 0.2);
+}
+
+body[data-theme="light"] .panel-content::-webkit-scrollbar-thumb:hover,
+body[data-theme="light"] .filter-checkboxes::-webkit-scrollbar-thumb:hover,
+body[data-theme="light"] .legend::-webkit-scrollbar-thumb:hover {
+    background: rgba(26, 34, 43, 0.3);
+}
+
+.theme-switch {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 16px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.theme-switch-label {
+    color: rgba(255, 255, 255, 0.75);
+    font-size: 0.85em;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+}
+
+.theme-switch-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    color: rgba(255, 255, 255, 0.9);
+}
+
+.theme-switch-toggle input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.theme-switch-track {
+    position: relative;
+    width: 38px;
+    height: 20px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    transition: background 0.2s ease;
+}
+
+.theme-switch-track::after {
+    content: '';
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.95);
+    transition: transform 0.2s ease;
+}
+
+.theme-switch-toggle input:checked + .theme-switch-track::after {
+    transform: translateX(18px);
+}
+
+.theme-switch-text {
+    font-size: 0.85em;
+    font-weight: 600;
+}
+
+body[data-theme="light"] .theme-switch {
+    background: rgba(26, 34, 43, 0.08);
+    border-color: rgba(26, 34, 43, 0.2);
+}
+
+body[data-theme="light"] .theme-switch-label,
+body[data-theme="light"] .theme-switch-toggle,
+body[data-theme="light"] .theme-switch-text {
+    color: #1a222b;
+}
+
+body[data-theme="light"] .theme-switch-track {
+    background: rgba(26, 34, 43, 0.12);
+    border-color: rgba(26, 34, 43, 0.2);
+}
+
+body[data-theme="light"] .theme-switch-track::after {
+    background: #1a222b;
 }
 
 .control-group {
@@ -533,4 +719,59 @@ input[type="range"]::-moz-range-thumb:hover {
 #selectAll,
 #deselectAll {
     display: none;
+}
+
+/* Keep control/button text visible in light theme (declared at end to win cascade) */
+body[data-theme="light"] button,
+body[data-theme="light"] .control-group .checkbox-label,
+body[data-theme="light"] .control-group .checkbox-label:hover,
+body[data-theme="light"] #randomizeColors,
+body[data-theme="light"] #autoShiftStatus {
+    color: #1a222b;
+}
+
+body[data-theme="light"] .control-group input[type="checkbox"] {
+    accent-color: #1a222b;
+}
+
+body[data-theme="light"] #randomizeColors {
+    background: rgba(26, 34, 43, 0.08);
+    color: #1a222b;
+    border: 1px solid rgba(26, 34, 43, 0.28);
+}
+
+body[data-theme="light"] #randomizeColors:hover {
+    background: rgba(26, 34, 43, 0.12);
+    border-color: rgba(26, 34, 43, 0.38);
+}
+
+body[data-theme="light"] #randomizeColors:active {
+    background: rgba(26, 34, 43, 0.16);
+    border-color: rgba(26, 34, 43, 0.44);
+}
+
+body[data-theme="light"] button,
+body[data-theme="light"] .control-group select,
+body[data-theme="light"] .filter-checkbox-item label,
+body[data-theme="light"] .legend-item,
+body[data-theme="light"] .legend-gradient-labels {
+    color: #1a222b;
+}
+
+body[data-theme="light"] .control-group select,
+body[data-theme="light"] button,
+body[data-theme="light"] .remove-filter,
+body[data-theme="light"] .filter-block,
+body[data-theme="light"] .filter-checkboxes-container,
+body[data-theme="light"] .legend,
+body[data-theme="light"] .info {
+    border-color: rgba(26, 34, 43, 0.24);
+}
+
+body[data-theme="light"] button:focus-visible,
+body[data-theme="light"] .control-group select:focus,
+body[data-theme="light"] .control-group input[type="range"]:focus,
+body[data-theme="light"] .theme-switch-toggle input:focus-visible + .theme-switch-track {
+    outline: 2px solid rgba(31, 111, 222, 0.55);
+    outline-offset: 2px;
 }
