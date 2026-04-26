@@ -24,8 +24,9 @@ body[data-theme="light"] {
 }
 
 #container {
+    --right-panel-width: 320px;
     display: grid;
-    grid-template-columns: 300px 1fr 320px;
+    grid-template-columns: 300px 1fr var(--right-panel-width);
     height: 100vh;
     width: 100vw;
     gap: 12px;
@@ -186,9 +187,50 @@ body[data-theme="light"] #center-panel {
 
 /* Right Panel - Controls */
 #right-panel {
+    position: relative;
     display: flex;
     flex-direction: column;
     overflow: hidden;
+}
+
+#right-panel-resizer {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -9px;
+    width: 12px;
+    cursor: col-resize;
+    touch-action: none;
+    z-index: 20;
+}
+
+#right-panel-resizer::before {
+    content: "";
+    position: absolute;
+    top: 16px;
+    bottom: 16px;
+    left: 5px;
+    width: 2px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.25);
+    transition: background 0.2s ease;
+}
+
+#right-panel-resizer:hover::before {
+    background: rgba(255, 255, 255, 0.45);
+}
+
+body[data-theme="light"] #right-panel-resizer::before {
+    background: rgba(26, 34, 43, 0.25);
+}
+
+body[data-theme="light"] #right-panel-resizer:hover::before {
+    background: rgba(26, 34, 43, 0.45);
+}
+
+body.resizing {
+    cursor: col-resize;
+    user-select: none;
 }
 
 #right-panel h2 {

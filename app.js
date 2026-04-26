@@ -645,6 +645,71 @@ function onWindowResize() {
     renderer.setSize(width, height);
 }
 
+function setupRightPanelResizer() {
+    const container = document.getElementById('container');
+    const resizer = document.getElementById('right-panel-resizer');
+    const leftPanel = document.getElementById('left-panel');
+    if (!container || !resizer || !leftPanel) {
+        return;
+    }
+
+    const minRightWidth = 280;
+    const minCenterWidth = 360;
+    let dragging = false;
+    let activePointerId = null;
+    let resizeRafId = null;
+
+    const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+
+    const onPointerMove = (event) => {
+        if (!dragging) return;
+        const containerRect = container.getBoundingClientRect();
+        const leftRect = leftPanel.getBoundingClientRect();
+        const maxRightWidth = Math.max(
+            minRightWidth,
+            containerRect.width - leftRect.width - minCenterWidth
+        );
+        const proposed = containerRect.right - event.clientX;
+        const width = clamp(proposed, minRightWidth, maxRightWidth);
+        container.style.setProperty('--right-panel-width', `${Math.round(width)}px`);
+        if (resizeRafId === null) {
+            resizeRafId = requestAnimationFrame(() => {
+                resizeRafId = null;
+                onWindowResize();
+            });
+        }
+    };
+
+    const stopDragging = () => {
+        if (!dragging) return;
+        dragging = false;
+        document.body.classList.remove('resizing');
+        if (activePointerId !== null && resizer.releasePointerCapture) {
+            try {
+                resizer.releasePointerCapture(activePointerId);
+            } catch (e) {
+                // Ignore release errors on some browsers.
+            }
+        }
+        activePointerId = null;
+    };
+
+    resizer.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        dragging = true;
+        activePointerId = event.pointerId;
+        if (resizer.setPointerCapture) {
+            resizer.setPointerCapture(activePointerId);
+        }
+        document.body.classList.add('resizing');
+        onPointerMove(event);
+    });
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', stopDragging);
+    window.addEventListener('pointercancel', stopDragging);
+}
+
 // Handle hover detection when SHIFT is held
 function handleHover(event) {
     // Only handle hover if SHIFT is pressed and not dragging camera
@@ -2442,6 +2507,7 @@ function animate() {
 // Initialize when page loads
 window.addEventListener('DOMContentLoaded', () => {
     setupThemeToggle();
+    setupRightPanelResizer();
     initScene();
     loadData();
 });
