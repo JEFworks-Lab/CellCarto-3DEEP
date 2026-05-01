@@ -51,24 +51,23 @@
                 <div class="viewport-label">WT</div>
                 <div class="viewport-info" id="viewport-info-wt"></div>
                 <canvas id="scene-wt"></canvas>
+                <div class="timerank-row">
+                    <input type="range" id="timerankSliderWT" min="0" max="0" step="1" value="0">
+                    <span id="timerankStatusWT" class="timerank-status"></span>
+                </div>
             </div>
             <div id="viewport-ko" class="viewport">
                 <div class="viewport-label">KO</div>
                 <div class="viewport-info" id="viewport-info-ko"></div>
                 <canvas id="scene-ko"></canvas>
+                <div class="timerank-row">
+                    <input type="range" id="timerankSliderKO" min="0" max="0" step="1" value="0">
+                    <span id="timerankStatusKO" class="timerank-status"></span>
+                </div>
             </div>
             <div id="loading">
                 <div class="loading-spinner"></div>
                 <div class="loading-text">Loading data... This may take a moment.</div>
-            </div>
-            <div id="timerank-bar">
-                <label for="timerankSlider" id="timerankLabel">Hair Follicle</label>
-                <input type="range" id="timerankSlider" min="0" max="0" step="1" value="0">
-                <span id="timerankStatus"></span>
-                <label class="timerank-play-label">
-                    <input type="checkbox" id="timerankPlay">
-                    Play
-                </label>
             </div>
         </div>
 
@@ -130,6 +129,20 @@
                     <label class="checkbox-label">
                         <input type="checkbox" id="autoRotate">
                         Auto-rotate
+                    </label>
+                </div>
+
+                <div class="control-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="timerankCouple" checked>
+                        Couple Time
+                    </label>
+                </div>
+
+                <div class="control-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="timerankPlay">
+                        Play Time
                     </label>
                 </div>
 

@@ -20,7 +20,7 @@ const PARQUET_SHARDS = [
 
 // Configuration
 const MAX_POINTS = 8000000; // Max points to render for performance (reduced from 2M)
-const KO_TRANSFORMED_Y_OFFSET = 1000; // Shift KO follicles up in the transformed coordinate space so they share the same camera view as WT
+const KO_TRANSFORMED_Y_OFFSET = -1000; // Shift KO follicles up in the transformed coordinate space so they share the same camera view as WT
 const DEFAULT_TIMERANK = 260; // Initial TimeRank shown in slider/filter on load
     
 // Column configuration - users can manually change these lists
@@ -34,7 +34,7 @@ let selectedCoordY = COORD_PRESETS.transformed.y;
 let selectedCoordZ = COORD_PRESETS.transformed.z;
 const column_names_categorical = ['Structure', 'HF', 'Sample', 'Group', 'CellType', 'Gene'];
 const UI_CATEGORICAL_OPTIONS = ['Structure', 'CellType', 'Gene'];
-const column_names_continuous = ['Time'];
+const column_names_continuous = ['Pseudotime'];
 
 function getAttributeDisplayName(attribute) {
     return attribute === 'CellType' ? 'Cell-Type' : attribute;
@@ -53,9 +53,10 @@ let autoRotateEnabled = false;
 let autoShiftEnabled = false;
 let autoShiftIntervalId = null;
 let autoShiftTimeRankValues = [];
-let autoShiftCurrentIndex = 0;
+let autoShiftCurrentIndex = { wt: 0, ko: 0 };
 const AUTO_SHIFT_INTERVAL_MS = 500;
 let timerankFilterActive = true;
+let timerankCoupled = true;
 let tooltip = null;
 let isShiftPressed = false;
 let eventListenersInitialized = false;
@@ -67,7 +68,7 @@ const viewports = {
 };
 let currentTheme = 'dark';
 
-const THEME_STORAGE_KEY = 'kidney-cellcarto-theme';
+const THEME_STORAGE_KEY = 'cellcarto-theme';
 const SCENE_THEME_COLORS = {
     dark: 0x1a1a1a,
     light: 0xf5f7fb
@@ -428,9 +429,16 @@ function showHighlight(position, point, mouseX, mouseY, vp) {
     rows.push(`<div><strong>${selectedCoordY}:</strong> ${Number(point.y).toFixed(2)}</div>`);
     rows.push(`<div><strong>${selectedCoordZ}:</strong> ${Number(point.z).toFixed(2)}</div>`);
 
+    if (point.Pseudotime != null && point.Pseudotime !== '') {
+        const pv = typeof point.Pseudotime === 'number'
+            ? Number(point.Pseudotime).toFixed(4)
+            : String(point.Pseudotime);
+        rows.push(`<div><strong>Pseudotime:</strong> ${pv}</div>`);
+    }
+
     // Show all currently loaded non-internal attributes for this point.
     const extraKeys = Object.keys(point)
-        .filter((k) => !['x', 'y', 'z'].includes(k) && !k.startsWith('_raw_'))
+        .filter((k) => !['x', 'y', 'z', 'Pseudotime'].includes(k) && !k.startsWith('_raw_'))
         .sort((a, b) => a.localeCompare(b));
 
     for (const key of extraKeys) {
@@ -722,8 +730,13 @@ async function loadMoreShards(targetShardCount) {
                 const idx = colIdx[col];
                 if (idx === undefined) continue;
                 
-                if (col === 'Time') {
-                    point[col] = row[idx];
+                if (col === 'Pseudotime') {
+                    const pt = row[idx];
+                    point[col] = pt;
+                    if (pt != null && typeof pt === 'number') {
+                        continuousRanges.Pseudotime.min = Math.min(continuousRanges.Pseudotime.min, pt);
+                        continuousRanges.Pseudotime.max = Math.max(continuousRanges.Pseudotime.max, pt);
+                    }
                 } else if (column_names_categorical.includes(col)) {
                     const value = row[idx];
                     point[col] = value != null ? String(value) : '';
@@ -761,19 +774,25 @@ async function loadMoreShards(targetShardCount) {
         // Update UI
         document.getElementById('pointCount').textContent = `Total points: ${allData.length.toLocaleString()} (${loadedShardCount * 10}% loaded)`;
         
-        // Rebuild TimeRank slider with new data and re-filter
-        const prevRank = autoShiftTimeRankValues.length > 0
-            ? autoShiftTimeRankValues[autoShiftCurrentIndex]
-            : null;
+        // Rebuild TimeRank sliders with new data and re-filter
+        const prevRanks = {};
+        for (const vpKey of ['wt', 'ko']) {
+            prevRanks[vpKey] = autoShiftTimeRankValues.length > 0
+                ? autoShiftTimeRankValues[autoShiftCurrentIndex[vpKey]]
+                : null;
+        }
         buildTimeRankValues();
-        const slider = document.getElementById('timerankSlider');
-        if (slider && autoShiftTimeRankValues.length > 0) {
-            slider.max = autoShiftTimeRankValues.length - 1;
-            if (prevRank !== null) {
-                const newIdx = autoShiftTimeRankValues.indexOf(prevRank);
-                autoShiftCurrentIndex = newIdx >= 0 ? newIdx : 0;
+        for (const vpKey of ['wt', 'ko']) {
+            const suffix = vpKey === 'wt' ? 'WT' : 'KO';
+            const slider = document.getElementById('timerankSlider' + suffix);
+            if (slider && autoShiftTimeRankValues.length > 0) {
+                slider.max = autoShiftTimeRankValues.length - 1;
+                if (prevRanks[vpKey] !== null) {
+                    const newIdx = autoShiftTimeRankValues.indexOf(prevRanks[vpKey]);
+                    autoShiftCurrentIndex[vpKey] = newIdx >= 0 ? newIdx : 0;
+                }
+                slider.value = autoShiftCurrentIndex[vpKey];
             }
-            slider.value = autoShiftCurrentIndex;
         }
         syncAutoShiftUI();
         updateFilter();
@@ -838,11 +857,11 @@ async function loadData() {
         // Define essential columns for initial load:
         // - All coordinate columns (for coordinate system switching)
         // - Default colorBy column (first categorical)
-        // - Time (continuous attribute)
+        // - Pseudotime (continuous attribute)
         const defaultColorBy = column_names_categorical[0]; // 'Structure'
         const essentialColumns = [
             ...COORD_COLUMN_OPTIONS,
-            'Time',
+            'Pseudotime',
             defaultColorBy,
             'Group',
             'HF',
@@ -901,13 +920,14 @@ async function loadData() {
                     attributeValues[defaultColorBy].add(point[defaultColorBy]);
                 }
                 
-                // Add Time (continuous attribute)
-                const rowTime = row[colIdx.Time];
-                point.Time = rowTime;
-                if (rowTime != null) {
-                    if (!continuousRanges.Time) continuousRanges.Time = { min: Infinity, max: -Infinity };
-                    continuousRanges.Time.min = Math.min(continuousRanges.Time.min, rowTime);
-                    continuousRanges.Time.max = Math.max(continuousRanges.Time.max, rowTime);
+                // Pseudotime (continuous attribute)
+                if (colIdx.Pseudotime !== undefined) {
+                    const pt = row[colIdx.Pseudotime];
+                    point.Pseudotime = pt;
+                    if (pt != null && typeof pt === 'number') {
+                        continuousRanges.Pseudotime.min = Math.min(continuousRanges.Pseudotime.min, pt);
+                        continuousRanges.Pseudotime.max = Math.max(continuousRanges.Pseudotime.max, pt);
+                    }
                 }
                 
                 // Eagerly load key categorical fields used in overlays/hover
@@ -1456,7 +1476,7 @@ function createPointCloud() {
     }
 }
 
-// Update the info overlays in each viewport with HF, Sample, TimeRank
+// Update the info overlays in each viewport with HF, Sample, TimeRank, Pseudotime
 function updateViewportInfo() {
     const wtInfoEl = document.getElementById('viewport-info-wt');
     const koInfoEl = document.getElementById('viewport-info-ko');
@@ -1468,12 +1488,9 @@ function updateViewportInfo() {
         return;
     }
 
-    const targetRank = autoShiftTimeRankValues[autoShiftCurrentIndex];
-
-    // Find a representative point for each group at this TimeRank
-    for (const [group, el] of [['WT', wtInfoEl], ['KO', koInfoEl]]) {
-        let hfVal = '—', sampleVal = '—', trVal = targetRank;
-        // Scan visible data for first point matching this group & TimeRank
+    for (const [group, el, vpKey] of [['WT', wtInfoEl, 'wt'], ['KO', koInfoEl, 'ko']]) {
+        const targetRank = autoShiftTimeRankValues[autoShiftCurrentIndex[vpKey]];
+        let hfVal = '—', sampleVal = '—', trVal = targetRank, pseudotimeVal = '—';
         if (visibleIndices) {
             for (let i = 0; i < visibleIndices.length; i++) {
                 const p = allData[visibleIndices[i]];
@@ -1482,11 +1499,16 @@ function updateViewportInfo() {
                 if (isMatch && p._raw_TimeRank === targetRank) {
                     hfVal = p.HF || '—';
                     sampleVal = p.Sample || '—';
+                    if (p.Pseudotime != null && p.Pseudotime !== '') {
+                        pseudotimeVal = typeof p.Pseudotime === 'number'
+                            ? Number(p.Pseudotime).toFixed(4)
+                            : String(p.Pseudotime);
+                    }
                     break;
                 }
             }
         }
-        el.innerHTML = `<div><strong>HF:</strong> ${hfVal}</div><div><strong>Sample:</strong> ${sampleVal}</div><div><strong>TimeRank:</strong> ${trVal}</div>`;
+        el.innerHTML = `<div><strong>HF:</strong> ${hfVal}</div><div><strong>Sample:</strong> ${sampleVal}</div><div><strong>TimeRank:</strong> ${trVal}</div><div><strong>Pseudotime:</strong> ${pseudotimeVal}</div>`;
     }
 }
 
@@ -1844,12 +1866,15 @@ function updateFilter() {
     
     console.log(`[Filter] Final visible points: ${visibleIndices.length} out of ${allData.length} total`);
     
-    // Always filter to the currently selected TimeRank value
+    // Filter each group to its own selected TimeRank value
     if (timerankFilterActive && autoShiftTimeRankValues.length > 0) {
-        const targetRank = autoShiftTimeRankValues[autoShiftCurrentIndex];
+        const wtRank = autoShiftTimeRankValues[autoShiftCurrentIndex.wt];
+        const koRank = autoShiftTimeRankValues[autoShiftCurrentIndex.ko];
         const shifted = [];
         for (let i = 0; i < visibleIndices.length; i++) {
             const point = allData[visibleIndices[i]];
+            const group = point.Group || '';
+            const targetRank = (group === 'KO') ? koRank : wtRank;
             if (point._raw_TimeRank === targetRank) {
                 shifted.push(visibleIndices[i]);
             }
@@ -1871,13 +1896,17 @@ function buildTimeRankValues() {
     console.log(`[AutoShift] Found ${autoShiftTimeRankValues.length} unique TimeRank values`);
 }
 
-// Update the TimeRank slider and label to reflect the current index
+// Update both TimeRank sliders and labels to reflect current indices
 function syncAutoShiftUI() {
-    const slider = document.getElementById('timerankSlider');
-    const statusEl = document.getElementById('timerankStatus');
-    if (slider) slider.value = autoShiftCurrentIndex;
-    if (statusEl && autoShiftTimeRankValues.length > 0) {
-        statusEl.textContent = `${autoShiftTimeRankValues[autoShiftCurrentIndex]} (${autoShiftCurrentIndex + 1}/${autoShiftTimeRankValues.length})`;
+    for (const vpKey of ['wt', 'ko']) {
+        const suffix = vpKey === 'wt' ? 'WT' : 'KO';
+        const slider = document.getElementById('timerankSlider' + suffix);
+        const statusEl = document.getElementById('timerankStatus' + suffix);
+        if (slider) slider.value = autoShiftCurrentIndex[vpKey];
+        if (statusEl && autoShiftTimeRankValues.length > 0) {
+            const idx = autoShiftCurrentIndex[vpKey];
+            statusEl.textContent = `${autoShiftTimeRankValues[idx]} (${idx + 1}/${autoShiftTimeRankValues.length})`;
+        }
     }
     updateViewportInfo();
 }
@@ -1886,25 +1915,30 @@ function syncAutoShiftUI() {
 function autoShiftTick() {
     if (!autoShiftEnabled || autoShiftTimeRankValues.length === 0) return;
 
-    autoShiftCurrentIndex = (autoShiftCurrentIndex + 1) % autoShiftTimeRankValues.length;
+    autoShiftCurrentIndex.wt = (autoShiftCurrentIndex.wt + 1) % autoShiftTimeRankValues.length;
+    autoShiftCurrentIndex.ko = (autoShiftCurrentIndex.ko + 1) % autoShiftTimeRankValues.length;
     syncAutoShiftUI();
     updateFilter();
 }
 
-// Initialize the TimeRank slider after data is loaded
+// Initialize the TimeRank sliders after data is loaded
 function initTimerankSlider() {
     buildTimeRankValues();
     if (autoShiftTimeRankValues.length === 0) {
         return;
     }
     const defaultIndex = autoShiftTimeRankValues.indexOf(DEFAULT_TIMERANK);
-    autoShiftCurrentIndex = defaultIndex >= 0 ? defaultIndex : 0;
+    const startIdx = defaultIndex >= 0 ? defaultIndex : 0;
+    autoShiftCurrentIndex.wt = startIdx;
+    autoShiftCurrentIndex.ko = startIdx;
 
-    const slider = document.getElementById('timerankSlider');
-    if (slider) {
-        slider.min = 0;
-        slider.max = autoShiftTimeRankValues.length - 1;
-        slider.value = autoShiftCurrentIndex;
+    for (const suffix of ['WT', 'KO']) {
+        const slider = document.getElementById('timerankSlider' + suffix);
+        if (slider) {
+            slider.min = 0;
+            slider.max = autoShiftTimeRankValues.length - 1;
+            slider.value = startIdx;
+        }
     }
     syncAutoShiftUI();
     updateFilter();
@@ -2068,28 +2102,45 @@ function setupEventListeners() {
         console.log('[Camera] Auto-rotate:', autoRotateEnabled ? 'enabled' : 'disabled');
     });
 
-    // TimeRank slider – scrub to a specific hair follicle
-    document.getElementById('timerankSlider').addEventListener('input', (e) => {
-        const idx = parseInt(e.target.value);
-        if (isNaN(idx) || idx < 0 || idx >= autoShiftTimeRankValues.length) return;
+    // TimeRank sliders – scrub to a specific hair follicle per viewport
+    for (const [vpKey, suffix] of [['wt', 'WT'], ['ko', 'KO']]) {
+        const slider = document.getElementById('timerankSlider' + suffix);
 
-        autoShiftCurrentIndex = idx;
-        syncAutoShiftUI();
+        slider.addEventListener('input', (e) => {
+            const idx = parseInt(e.target.value);
+            if (isNaN(idx) || idx < 0 || idx >= autoShiftTimeRankValues.length) return;
 
-        // Pause auto-play while dragging
-        if (autoShiftIntervalId !== null) {
-            clearInterval(autoShiftIntervalId);
-            autoShiftIntervalId = null;
-        }
+            const delta = idx - autoShiftCurrentIndex[vpKey];
+            autoShiftCurrentIndex[vpKey] = idx;
 
-        updateFilter();
-    });
+            if (timerankCoupled) {
+                const otherKey = vpKey === 'wt' ? 'ko' : 'wt';
+                let otherIdx = autoShiftCurrentIndex[otherKey] + delta;
+                otherIdx = Math.max(0, Math.min(autoShiftTimeRankValues.length - 1, otherIdx));
+                autoShiftCurrentIndex[otherKey] = otherIdx;
+            }
 
-    // Resume auto-play when user releases the slider (if Play is checked)
-    document.getElementById('timerankSlider').addEventListener('change', () => {
-        if (autoShiftEnabled && autoShiftIntervalId === null) {
-            autoShiftIntervalId = setInterval(autoShiftTick, AUTO_SHIFT_INTERVAL_MS);
-        }
+            syncAutoShiftUI();
+
+            // Pause auto-play while dragging
+            if (autoShiftIntervalId !== null) {
+                clearInterval(autoShiftIntervalId);
+                autoShiftIntervalId = null;
+            }
+
+            updateFilter();
+        });
+
+        slider.addEventListener('change', () => {
+            if (autoShiftEnabled && autoShiftIntervalId === null) {
+                autoShiftIntervalId = setInterval(autoShiftTick, AUTO_SHIFT_INTERVAL_MS);
+            }
+        });
+    }
+
+    // Couple checkbox
+    document.getElementById('timerankCouple').addEventListener('change', (e) => {
+        timerankCoupled = e.target.checked;
     });
 
     // Play checkbox for auto-advancing through TimeRank

@@ -185,8 +185,8 @@ body[data-theme="light"] .viewport-info {
     text-shadow: 0 1px 4px rgba(255, 255, 255, 0.6);
 }
 
-/* TimeRank slider bar at the bottom of the center panel */
-#timerank-bar {
+/* TimeRank slider row pinned to the bottom of each viewport */
+.timerank-row {
     position: absolute;
     bottom: 0;
     left: 0;
@@ -194,14 +194,14 @@ body[data-theme="light"] .viewport-info {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 10px 16px;
+    padding: 6px 16px;
     background: rgba(0, 0, 0, 0.65);
     backdrop-filter: blur(8px);
     z-index: 10;
     border-top: 1px solid rgba(255, 255, 255, 0.12);
 }
 
-#timerank-bar label {
+.timerank-row label {
     color: rgba(255, 255, 255, 0.85);
     font-size: 0.82em;
     font-weight: 600;
@@ -209,7 +209,9 @@ body[data-theme="light"] .viewport-info {
     letter-spacing: 0.3px;
 }
 
-#timerankSlider {
+
+#timerankSliderWT,
+#timerankSliderKO {
     flex: 1;
     height: 6px;
     margin: 0;
@@ -218,7 +220,8 @@ body[data-theme="light"] .viewport-info {
     border-radius: 999px;
 }
 
-#timerankSlider::-webkit-slider-thumb {
+#timerankSliderWT::-webkit-slider-thumb,
+#timerankSliderKO::-webkit-slider-thumb {
     width: 18px;
     height: 18px;
     border-radius: 50%;
@@ -227,7 +230,8 @@ body[data-theme="light"] .viewport-info {
     box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
 }
 
-#timerankSlider::-moz-range-thumb {
+#timerankSliderWT::-moz-range-thumb,
+#timerankSliderKO::-moz-range-thumb {
     width: 18px;
     height: 18px;
     border-radius: 50%;
@@ -236,7 +240,7 @@ body[data-theme="light"] .viewport-info {
     box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
 }
 
-#timerankStatus {
+.timerank-status {
     color: rgba(255, 255, 255, 0.7);
     font-size: 0.8em;
     white-space: nowrap;
@@ -256,29 +260,32 @@ body[data-theme="light"] .viewport-info {
     accent-color: rgba(255, 255, 255, 0.8);
 }
 
-body[data-theme="light"] #timerank-bar {
+body[data-theme="light"] .timerank-row {
     background: rgba(255, 255, 255, 0.8);
     border-top-color: rgba(26, 34, 43, 0.14);
 }
 
-body[data-theme="light"] #timerankSlider {
+body[data-theme="light"] #timerankSliderWT,
+body[data-theme="light"] #timerankSliderKO {
     background: rgba(26, 34, 43, 0.22);
 }
 
-body[data-theme="light"] #timerankSlider::-webkit-slider-thumb {
+body[data-theme="light"] #timerankSliderWT::-webkit-slider-thumb,
+body[data-theme="light"] #timerankSliderKO::-webkit-slider-thumb {
     background: #1a222b;
     border: 2px solid #ffffff;
     box-shadow: 0 0 0 1px rgba(26, 34, 43, 0.35);
 }
 
-body[data-theme="light"] #timerankSlider::-moz-range-thumb {
+body[data-theme="light"] #timerankSliderWT::-moz-range-thumb,
+body[data-theme="light"] #timerankSliderKO::-moz-range-thumb {
     background: #1a222b;
     border: 2px solid #ffffff;
     box-shadow: 0 0 0 1px rgba(26, 34, 43, 0.35);
 }
 
-body[data-theme="light"] #timerank-bar label,
-body[data-theme="light"] #timerankStatus {
+body[data-theme="light"] .timerank-row label,
+body[data-theme="light"] .timerank-status {
     color: #1a222b;
 }
 
