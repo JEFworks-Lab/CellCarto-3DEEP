@@ -20,7 +20,7 @@ const PARQUET_SHARDS = [
 
 // Configuration
 const MAX_POINTS = 8000000; // Max points to render for performance (reduced from 2M)
-const KO_TRANSFORMED_Y_OFFSET = -1000; // Shift KO follicles up in the transformed coordinate space so they share the same camera view as WT
+const KO_TRANSFORMED_Y_OFFSET = 1000; // Shift KO follicles up in the transformed coordinate space so they share the same camera view as WT
 const DEFAULT_TIMERANK = 260; // Initial TimeRank shown in slider/filter on load
     
 // Column configuration - users can manually change these lists
@@ -748,7 +748,7 @@ async function loadMoreShards(targetShardCount) {
             
             // Set display coordinates (after Group is known for KO offset)
             point.x = point['_raw_' + selectedCoordX] ?? 0;
-            point.y = point['_raw_' + selectedCoordY] ?? 0;
+            point.y = -(point['_raw_' + selectedCoordY] ?? 0);
             point.z = point['_raw_' + selectedCoordZ] ?? 0;
             if (point.Group === 'KO' && selectedCoordY === 'transformedZ') {
                 point.y += KO_TRANSFORMED_Y_OFFSET;
@@ -944,7 +944,7 @@ async function loadData() {
                 
                 // Set display coordinates (after Group is known for KO offset)
                 point.x = point['_raw_' + selectedCoordX] ?? 0;
-                point.y = point['_raw_' + selectedCoordY] ?? 0;
+                point.y = -(point['_raw_' + selectedCoordY] ?? 0);
                 point.z = point['_raw_' + selectedCoordZ] ?? 0;
                 if (point.Group === 'KO' && selectedCoordY === 'transformedZ') {
                     point.y += KO_TRANSFORMED_Y_OFFSET;
@@ -1975,7 +1975,7 @@ function remapCoordinates() {
     for (let i = 0; i < allData.length; i++) {
         const point = allData[i];
         point.x = point['_raw_' + selectedCoordX] ?? 0;
-        point.y = point['_raw_' + selectedCoordY] ?? 0;
+        point.y = -(point['_raw_' + selectedCoordY] ?? 0);
         point.z = point['_raw_' + selectedCoordZ] ?? 0;
         if (point.Group === 'KO' && selectedCoordY === 'transformedZ') {
             point.y += KO_TRANSFORMED_Y_OFFSET;
