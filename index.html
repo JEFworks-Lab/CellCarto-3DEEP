@@ -27,7 +27,14 @@
                         <p>Deep-tissue spatial transcriptomics in newborn mouse skin enabled 4D molecular mapping of hair follicle organogenesis by exploiting the natural asynchrony of follicle development. This browser displays 228 genes across 261 wildtype (WT) and 262 nude (KO) follicles spanning all stages of organogenesis. Data are down-sampled for performance.</p>                    
                         <br>
                         <p>
-                            <b><u>Usage:</u></b>
+                            <span class="usage-heading">
+                                <b><u>Usage:</u></b>
+                                <button type="button" id="demoVideoBtn" class="demo-video-btn" title="Watch demo tutorial" aria-label="Watch demo tutorial">
+                                    <svg class="demo-video-btn__icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                        <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
+                                    </svg>
+                                </button>
+                            </span>
                             Use the mouse to pan and zoom. 
                             Hold the Control key to rotate.
                             Hold the Shift key and hover over transcripts for more information.
@@ -148,6 +155,24 @@
 
 
 
+            </div>
+        </div>
+    </div>
+
+    <div id="demoVideoModal" class="demo-video-modal" hidden aria-hidden="true">
+        <div class="demo-video-modal__backdrop" data-demo-video-dismiss></div>
+        <div class="demo-video-modal__dialog" role="dialog" aria-labelledby="demoVideoModalTitle" aria-modal="true">
+            <button type="button" class="demo-video-modal__close" id="demoVideoClose" aria-label="Close demo video">&times;</button>
+            <h2 id="demoVideoModalTitle" class="demo-video-modal__title">Demo tutorial</h2>
+            <p class="demo-video-modal__subtitle">A walkthrough of how to explore and interact with this dataset.</p>
+            <div class="demo-video-modal__player">
+                <iframe
+                    id="demoVideoIframe"
+                    title="3DEEP Hair Follicle Data Explorer demo tutorial"
+                    src=""
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                    allowfullscreen
+                ></iframe>
             </div>
         </div>
     </div>

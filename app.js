@@ -69,6 +69,8 @@ const viewports = {
 let currentTheme = 'dark';
 
 const THEME_STORAGE_KEY = 'cellcarto-theme';
+const DEMO_VIDEO_STORAGE_KEY = 'cellcarto-demo-video-dismissed';
+const DEMO_VIDEO_YOUTUBE_ID = 'gt_iugHN2Pg';
 const SCENE_THEME_COLORS = {
     dark: 0x1a1a1a,
     light: 0xf5f7fb
@@ -98,6 +100,60 @@ function applyTheme(theme) {
         label.textContent = theme === 'light' ? 'Light' : 'Dark';
     }
     updateSceneTheme(theme);
+}
+
+function getDemoVideoEmbedUrl(autoplay = false) {
+    const params = new URLSearchParams({
+        rel: '0',
+        modestbranding: '1',
+    });
+    if (autoplay) {
+        params.set('autoplay', '1');
+    }
+    return `https://www.youtube-nocookie.com/embed/${DEMO_VIDEO_YOUTUBE_ID}?${params}`;
+}
+
+function setupDemoVideoModal() {
+    const modal = document.getElementById('demoVideoModal');
+    const iframe = document.getElementById('demoVideoIframe');
+    const openBtn = document.getElementById('demoVideoBtn');
+    const closeBtn = document.getElementById('demoVideoClose');
+    const backdrop = modal?.querySelector('[data-demo-video-dismiss]');
+    if (!modal || !iframe) {
+        return;
+    }
+
+    const openModal = (autoplay = true) => {
+        iframe.src = getDemoVideoEmbedUrl(autoplay);
+        modal.classList.add('demo-video-modal--open');
+        modal.removeAttribute('hidden');
+        modal.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('demo-video-modal-open');
+        closeBtn?.focus();
+    };
+
+    const closeModal = () => {
+        modal.classList.remove('demo-video-modal--open');
+        modal.setAttribute('hidden', '');
+        modal.setAttribute('aria-hidden', 'true');
+        document.body.classList.remove('demo-video-modal-open');
+        iframe.src = '';
+        localStorage.setItem(DEMO_VIDEO_STORAGE_KEY, '1');
+    };
+
+    openBtn?.addEventListener('click', () => openModal(true));
+    closeBtn?.addEventListener('click', closeModal);
+    backdrop?.addEventListener('click', closeModal);
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && modal.classList.contains('demo-video-modal--open')) {
+            closeModal();
+        }
+    });
+
+    if (!localStorage.getItem(DEMO_VIDEO_STORAGE_KEY)) {
+        requestAnimationFrame(() => openModal(true));
+    }
 }
 
 function setupThemeToggle() {
@@ -2181,6 +2237,7 @@ function animate() {
 // Initialize when page loads
 window.addEventListener('DOMContentLoaded', () => {
     setupThemeToggle();
+    setupDemoVideoModal();
     setupRightPanelResizer();
     initScene();
     loadData();
